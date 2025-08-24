@@ -102,14 +102,18 @@ const App = () => {
             setAuth(authInstance);
             setDb(dbInstance);
 
+            // Listener de autenticação para gerenciar o estado do usuário
             const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+                // Se o usuário existir, define o estado de usuário e ID
                 if (user) {
                     setUser(user);
                     setUserId(user.uid);
                 } else {
+                    // Se não houver usuário, limpa o estado
                     setUser(null);
                     setUserId(null);
                 }
+                // Importante: Apenas desativa o carregamento após a verificação inicial do estado de autenticação
                 setLoading(false);
             });
 
@@ -420,6 +424,7 @@ const App = () => {
 
     // --- Renderização da UI (Lógica de Navegação) ---
     const renderContent = () => {
+        // Passo 1: Verifica o estado de carregamento inicial
         if (loading) {
             return (
                 <div className="flex items-center justify-center min-h-screen">
@@ -433,7 +438,8 @@ const App = () => {
                 </div>
             );
         }
-
+        
+        // Passo 2: Se o carregamento terminou, verifica se o usuário está autenticado
         if (!user) {
             // Se o usuário não estiver logado, mostra a tela de login ou de cadastro
             return showRegister ? (
@@ -478,7 +484,7 @@ const App = () => {
                 </div>
             );
         } else if (!currentProject) {
-            // Se o usuário está logado mas não selecionou um projeto, mostra a lista de projetos
+            // Passo 3: Se o usuário está logado mas não selecionou um projeto, mostra a lista de projetos
             return (
                 <div className="w-full max-w-2xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
                     <header className="flex justify-between items-center mb-6">
@@ -519,7 +525,7 @@ const App = () => {
                 </div>
             );
         } else {
-            // Se o usuário está logado e um projeto foi selecionado, mostra o dashboard
+            // Passo 4: Se o usuário está logado e um projeto foi selecionado, mostra o dashboard
             return (
                 <div className="w-full max-w-5xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
                     <header className="flex flex-col md:flex-row justify-between items-center mb-6">
