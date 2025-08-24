@@ -1,6 +1,4 @@
-// Importações de bibliotecas e hooks do React
-import { useState, useEffect } from 'react';
-// Importações do Firebase SDK
+import { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
     getAuth, 
@@ -21,686 +19,996 @@ import {
     addDoc, 
     deleteDoc,
     getDocs,
-    where
+    where,
+    runTransaction
 } from 'firebase/firestore';
+import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
+import { Doughnut, Bar } from 'react-chartjs-2';
+import { format, parseISO } from 'date-fns';
 
-// Importações de componentes Chart.js e React-Chartjs-2
-import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
-import { Doughnut } from 'react-chartjs-2';
-// Importa o `html2canvas` para capturar a tela para o PDF
-import html2canvas from 'html2canvas';
-// Importa `jsPDF` e `jspdf-autotable` para a geração de PDF
-import jsPDF from 'jspdf';
-import 'jspdf-autotable';
+// Register Chart.js components
+ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
 
-// Registra os componentes necessários do Chart.js
-ChartJS.register(ArcElement, Tooltip, Legend);
+// Placeholder para as variáveis globais
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-// Componente para um Modal de Mensagem
-const InfoModal = ({ title, message, onClose }) => {
-    return (
-        <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-50 p-4">
-            <div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
-                <h4 className="text-lg font-bold mb-2">{title}</h4>
-                <p className="text-gray-700 mb-4">{message}</p>
-                <button onClick={onClose} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition">OK</button>
-            </div>
-        </div>
-    );
-};
-
-// Componente para um Modal de Confirmação
-const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
-    return (
-        <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-50 p-4">
-            <div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
-                <h4 className="text-lg font-bold mb-2">Confirmação</h4>
-                <p className="text-gray-700 mb-4">{message}</p>
-                <div className="flex justify-center space-x-4">
-                    <button onClick={onConfirm} className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition">Excluir</button>
-                    <button onClick={onCancel} className="bg-gray-300 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-400 transition">Cancelar</button>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// Componente Principal da Aplicação
+// The main App component
 const App = () => {
-    // --- State: Autenticação e Projeto ---
+    // --- Authentication and Project State ---
     const [user, setUser] = useState(null);
     const [userId, setUserId] = useState(null);
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
     const [loading, setLoading] = useState(true);
-    
     const [currentProject, setCurrentProject] = useState(null);
     const [projects, setProjects] = useState([]);
-    
-    // --- State: Dados e UI ---
+    const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [authError, setAuthError] = useState('');
+
+    // --- Data and UI State ---
     const [expenses, setExpenses] = useState([]);
-    const [budget, setBudget] = useState(null);
-    const [showExpenseModal, setShowExpenseModal] = useState(false);
-    const [showBudgetModal, setShowBudgetModal] = useState(false);
+    const [budgetItem, setBudgetItem] = useState('');
+    const [budgetAmount, setBudgetAmount] = useState('');
+    const [budgets, setBudgets] = useState([]);
+    const [expenseDescription, setExpenseDescription] = useState('');
+    const [expenseAmount, setExpenseAmount] = useState('');
+    const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+    const [selectedFilter, setSelectedFilter] = useState('all');
     const [showInfoModal, setShowInfoModal] = useState(false);
     const [infoModalContent, setInfoModalContent] = useState({ title: '', message: '' });
-    const [showConfirmationModal, setShowConfirmationModal] = useState(false);
-    const [confirmationAction, setConfirmationAction] = useState(() => () => {});
-    const [filter, setFilter] = useState('all');
+    const [activeTab, setActiveTab] = useState('dashboard');
+    const [searchTerm, setSearchTerm] = useState('');
+    const [expenseType, setExpenseType] = useState('Material');
+    const [showExpenseModal, setShowExpenseModal] = useState(false);
+    const [expenseData, setExpenseData] = useState({
+        date: format(new Date(), 'yyyy-MM-dd'),
+        category: 'Material',
+        description: '',
+        unit: 'Unidade',
+        quantity: 0,
+        unitPrice: 0,
+        totalValue: 0,
+        paymentMethod: 'Cartão de Crédito',
+    });
 
-    // Estado para controlar se a tela de registro deve ser mostrada
-    const [showRegister, setShowRegister] = useState(false);
+    // --- Refs ---
+    const mainContainerRef = useRef(null);
 
-    // --- Efeitos e Inicialização do Firebase ---
+    // --- Firebase Initialization and Authentication ---
     useEffect(() => {
-        // Inicializa o Firebase e o listener de autenticação
-        try {
-            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-            const app = initializeApp(firebaseConfig);
-            const authInstance = getAuth(app);
-            const dbInstance = getFirestore(app);
-            setAuth(authInstance);
-            setDb(dbInstance);
-
-            // Listener de autenticação para gerenciar o estado do usuário
-            const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
-                // Se o usuário existir, define o estado de usuário e ID
-                if (user) {
-                    setUser(user);
-                    setUserId(user.uid);
-                } else {
-                    // Se não houver usuário, limpa o estado
-                    setUser(null);
-                    setUserId(null);
-                }
-                // Importante: Apenas desativa o carregamento após a verificação inicial do estado de autenticação
+        const initializeFirebase = async () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase config is missing.");
                 setLoading(false);
-            });
+                return;
+            }
 
-            // Clean-up do listener
-            return () => unsubscribe();
-        } catch (error) {
-            console.error("Firebase initialization failed", error);
-            setInfoModalContent({ title: "Erro de Inicialização", message: "Falha ao inicializar o Firebase. Tente recarregar a página." });
-            setShowInfoModal(true);
-            setLoading(false);
-        }
+            try {
+                const app = initializeApp(firebaseConfig);
+                const firestore = getFirestore(app);
+                const authInstance = getAuth(app);
+                
+                setDb(firestore);
+                setAuth(authInstance);
+
+                // Listen for authentication state changes
+                const unsubscribe = onAuthStateChanged(authInstance, async (currentUser) => {
+                    if (currentUser) {
+                        setUser(currentUser);
+                        setUserId(currentUser.uid);
+                    } else {
+                        setUser(null);
+                        setUserId(null);
+                    }
+                    setLoading(false);
+                });
+
+                return () => unsubscribe();
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+                setInfoModalContent({
+                    title: "Erro de Inicialização",
+                    message: "Não foi possível conectar ao Firebase. Verifique sua conexão e tente novamente."
+                });
+                setShowInfoModal(true);
+                setLoading(false);
+            }
+        };
+
+        initializeFirebase();
     }, []);
 
-    // Efeito para carregar os projetos do usuário
+    // --- Real-time data listener ---
     useEffect(() => {
-        if (!userId || !db) return;
-
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const projectsRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
-        const projectsQuery = query(projectsRef);
-
-        const unsubscribe = onSnapshot(projectsQuery, (snapshot) => {
-            const projectsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setProjects(projectsList);
-        }, (error) => {
-            console.error("Error fetching projects:", error);
-            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar a lista de projetos." });
-            setShowInfoModal(true);
-        });
-
-        return () => unsubscribe();
-    }, [userId, db]);
-
-    // Efeito para carregar despesas e orçamento de um projeto específico
-    useEffect(() => {
-        if (!currentProject || !userId || !db) {
+        if (!db || !userId) {
+            setProjects([]);
             setExpenses([]);
-            setBudget(null);
+            setBudgets([]);
+            setCurrentProject(null);
             return;
         }
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const expensesRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
-        const budgetRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budget/current`);
-        
-        // Listener para despesas
-        const unsubscribeExpenses = onSnapshot(expensesRef, (snapshot) => {
-            const expensesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            setExpenses(expensesList);
-        }, (error) => {
-            console.error("Error fetching expenses:", error);
-            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar as despesas deste projeto." });
-            setShowInfoModal(true);
-        });
-
-        // Listener para orçamento
-        const unsubscribeBudget = onSnapshot(budgetRef, (doc) => {
-            if (doc.exists()) {
-                setBudget(doc.data());
-            } else {
-                setBudget(null);
+        // Listener for projects
+        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        const projectsUnsubscribe = onSnapshot(projectsColRef, (snapshot) => {
+            const projectsData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setProjects(projectsData);
+            if (!currentProject && projectsData.length > 0) {
+                setCurrentProject(projectsData[0]);
+            } else if (currentProject && !projectsData.find(p => p.id === currentProject.id)) {
+                setCurrentProject(projectsData.length > 0 ? projectsData[0] : null);
             }
         }, (error) => {
-            console.error("Error fetching budget:", error);
-            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar o orçamento deste projeto." });
+            console.error("Error listening to projects:", error);
+            setInfoModalContent({
+                title: "Erro de Sincronização",
+                message: "Não foi possível sincronizar os projetos. Tente recarregar a página."
+            });
             setShowInfoModal(true);
         });
 
         return () => {
-            unsubscribeExpenses();
-            unsubscribeBudget();
+            projectsUnsubscribe();
         };
-    }, [currentProject, userId, db]);
+    }, [db, userId, currentProject]);
 
-    // --- Funções de Autenticação ---
-    const handleLogin = async (event) => {
-        event.preventDefault();
-        const email = event.target.email.value;
-        const password = event.target.password.value;
-        setLoading(true);
-        try {
-            await signInWithEmailAndPassword(auth, email, password);
-            setInfoModalContent({ title: "Sucesso!", message: "Login realizado com sucesso." });
-            setShowInfoModal(true);
-        } catch (error) {
-            console.error("Login failed:", error);
-            setInfoModalContent({ title: "Erro de Login", message: "Credenciais inválidas. Por favor, verifique seu e-mail e senha." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+    // Listener for expenses and budgets
+    useEffect(() => {
+        if (!db || !userId || !currentProject) {
+            setExpenses([]);
+            setBudgets([]);
+            return;
         }
+
+        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+        const expensesUnsubscribe = onSnapshot(expensesColRef, (snapshot) => {
+            const expensesData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setExpenses(expensesData);
+        }, (error) => {
+            console.error("Error listening to expenses:", error);
+        });
+
+        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
+        const budgetsUnsubscribe = onSnapshot(budgetsColRef, (snapshot) => {
+            const budgetsData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setBudgets(budgetsData);
+        }, (error) => {
+            console.error("Error listening to budgets:", error);
+        });
+
+        return () => {
+            expensesUnsubscribe();
+            budgetsUnsubscribe();
+        };
+    }, [db, userId, currentProject]);
+
+    // --- Helper Functions ---
+    const showMessageModal = (title, message) => {
+        setInfoModalContent({ title, message });
+        setShowInfoModal(true);
     };
 
-    const handleRegister = async (event) => {
-        event.preventDefault();
-        const email = event.target.email.value;
-        const password = event.target.password.value;
-        setLoading(true);
+    // --- Authentication Logic ---
+    const handleAuthAction = async () => {
+        setAuthError('');
+        if (!email || !password) {
+            setAuthError('E-mail e senha são obrigatórios.');
+            return;
+        }
+
         try {
-            await createUserWithEmailAndPassword(auth, email, password);
-            setInfoModalContent({ title: "Sucesso!", message: "Cadastro realizado com sucesso. Você será logado automaticamente." });
-            setShowInfoModal(true);
+            if (authMode === 'register') {
+                await createUserWithEmailAndPassword(auth, email, password);
+                showMessageModal("Sucesso", "Usuário cadastrado com sucesso! Você já está logado.");
+            } else {
+                await signInWithEmailAndPassword(auth, email, password);
+                showMessageModal("Sucesso", "Login realizado com sucesso!");
+            }
         } catch (error) {
-            console.error("Registration failed:", error);
-            setInfoModalContent({ title: "Erro de Cadastro", message: "Não foi possível criar a conta. A senha deve ter no mínimo 6 caracteres e o e-mail deve ser válido." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+            console.error("Authentication error:", error);
+            setAuthError(error.message);
         }
     };
 
     const handleLogout = async () => {
-        await signOut(auth);
-        setCurrentProject(null); // Limpa o projeto atual
+        try {
+            await signOut(auth);
+            showMessageModal("Sucesso", "Logout realizado.");
+        } catch (error) {
+            console.error("Logout error:", error);
+            showMessageModal("Erro", "Não foi possível fazer logout. Tente novamente.");
+        }
     };
 
-    // --- Funções de Gerenciamento de Projetos ---
-    const handleAddProject = async (event) => {
-        event.preventDefault();
-        const projectName = event.target.projectName.value;
-        if (!projectName || !userId || !db) {
-            setInfoModalContent({ title: "Erro", message: "Nome do projeto ou usuário não encontrado." });
-            setShowInfoModal(true);
+    // --- CRUD Operations ---
+    const addProject = async () => {
+        if (!db || !userId) {
+            showMessageModal("Erro", "Não foi possível adicionar o projeto. Tente novamente.");
             return;
         }
-        
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const projectsRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+
+        const newProjectName = prompt("Digite o nome do novo projeto:");
+        if (!newProjectName) return;
+
+        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        const docRef = doc(projectsColRef);
+
         try {
-            setLoading(true);
-            await addDoc(projectsRef, {
-                name: projectName,
-                createdAt: new Date().toISOString()
+            await setDoc(docRef, { name: newProjectName, createdAt: new Date() });
+            showMessageModal("Sucesso", `Projeto "${newProjectName}" criado com sucesso!`);
+            setCurrentProject({ id: docRef.id, name: newProjectName });
+            setActiveTab('budget'); // Switch to budget tab after creating a new project
+        } catch (e) {
+            console.error("Error adding project: ", e);
+            showMessageModal("Erro", "Não foi possível criar o projeto. Verifique a sua conexão.");
+        }
+    };
+
+    const deleteProject = async (projectId) => {
+        if (!db || !userId || !projectId) {
+            showMessageModal("Erro", "Não foi possível remover o projeto. Tente novamente.");
+            return;
+        }
+
+        if (!window.confirm("Tem certeza que deseja remover este projeto e todos os seus dados?")) {
+            return;
+        }
+
+        try {
+            // Delete expenses subcollection
+            const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/expenses`);
+            const expenseDocs = await getDocs(expensesColRef);
+            await Promise.all(expenseDocs.docs.map(doc => deleteDoc(doc.ref)));
+
+            // Delete budgets subcollection
+            const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/budgets`);
+            const budgetDocs = await getDocs(budgetsColRef);
+            await Promise.all(budgetDocs.docs.map(doc => deleteDoc(doc.ref)));
+
+            // Delete the project document itself
+            const projectDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${projectId}`);
+            await deleteDoc(projectDocRef);
+
+            // After deletion, switch to the first project in the list or null if none exist
+            setProjects(prevProjects => {
+                const updatedProjects = prevProjects.filter(p => p.id !== projectId);
+                if (updatedProjects.length > 0) {
+                    setCurrentProject(updatedProjects[0]);
+                } else {
+                    setCurrentProject(null);
+                }
+                return updatedProjects;
             });
-            event.target.reset();
-        } catch (error) {
-            console.error("Error adding project:", error);
-            setInfoModalContent({ title: "Erro", message: "Não foi possível adicionar o projeto." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+
+            showMessageModal("Sucesso", "Projeto removido com sucesso!");
+        } catch (e) {
+            console.error("Error removing project: ", e);
+            showMessageModal("Erro", "Não foi possível remover o projeto. Verifique a sua conexão.");
         }
     };
-    
-    // Define o projeto atual para navegação
-    const handleSelectProject = (project) => {
-        setCurrentProject(project);
-    };
-    
-    // Volta para a lista de projetos
-    const handleBackToProjects = () => {
-        setCurrentProject(null);
-    };
 
-    // --- Funções de Gerenciamento de Despesas e Orçamento ---
-    const handleAddExpense = async (event) => {
-        event.preventDefault();
-        if (!currentProject || !userId || !db) return;
-        
-        const newExpense = {
-            description: event.target.description.value,
-            amount: parseFloat(event.target.amount.value),
-            category: event.target.category.value,
-            date: event.target.date.value
-        };
-
-        if (isNaN(newExpense.amount) || newExpense.amount <= 0) {
-            setInfoModalContent({ title: "Erro de Entrada", message: "Por favor, insira um valor de despesa válido." });
-            setShowInfoModal(true);
+    const addBudgetItem = async () => {
+        if (!budgetItem || !budgetAmount || !currentProject) {
+            showMessageModal("Erro", "Preencha todos os campos do orçamento.");
+            return;
+        }
+        if (isNaN(parseFloat(budgetAmount))) {
+            showMessageModal("Erro", "O valor do orçamento deve ser um número.");
             return;
         }
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const expensesRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
-        setLoading(true);
+        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
+
         try {
-            await addDoc(expensesRef, newExpense);
-            setShowExpenseModal(false);
-            event.target.reset();
-        } catch (error) {
-            console.error("Error adding expense:", error);
-            setInfoModalContent({ title: "Erro ao Adicionar", message: "Ocorreu um erro ao adicionar a despesa." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
-        }
-    };
-    
-    // Excluir despesa
-    const handleDeleteExpense = async (id) => {
-        if (!currentProject || !userId || !db) return;
-        
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const expenseDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses/${id}`);
-        setLoading(true);
-        try {
-            await deleteDoc(expenseDocRef);
-        } catch (error) {
-            console.error("Error deleting expense:", error);
-            setInfoModalContent({ title: "Erro ao Excluir", message: "Não foi possível excluir a despesa." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+            await addDoc(budgetsColRef, {
+                item: budgetItem,
+                amount: parseFloat(budgetAmount),
+                createdAt: new Date()
+            });
+            setBudgetItem('');
+            setBudgetAmount('');
+            showMessageModal("Sucesso", "Item de orçamento adicionado.");
+        } catch (e) {
+            console.error("Error adding budget item: ", e);
+            showMessageModal("Erro", "Não foi possível adicionar o item de orçamento. Tente novamente.");
         }
     };
 
-    // Adicionar/Atualizar orçamento
-    const handleAddBudget = async (event) => {
-        event.preventDefault();
-        if (!currentProject || !userId || !db) return;
-        
-        const newBudget = {
-            amount: parseFloat(event.target.amount.value),
-            startDate: event.target.startDate.value,
-            endDate: event.target.endDate.value
-        };
-    
-        if (isNaN(newBudget.amount) || newBudget.amount <= 0) {
-            setInfoModalContent({ title: "Erro de Entrada", message: "Por favor, insira um valor de orçamento válido." });
-            setShowInfoModal(true);
-            return;
-        }
-        
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const budgetDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budget/current`);
-        setLoading(true);
+    const deleteBudgetItem = async (id) => {
+        if (!id || !currentProject) return;
+
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`, id);
         try {
-            await setDoc(budgetDocRef, newBudget);
-            setShowBudgetModal(false);
-        } catch (error) {
-            console.error("Error setting budget:", error);
-            setInfoModalContent({ title: "Erro ao Salvar", message: "Não foi possível salvar o orçamento." });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+            await deleteDoc(docRef);
+            showMessageModal("Sucesso", "Item de orçamento removido.");
+        } catch (e) {
+            console.error("Error removing budget item: ", e);
+            showMessageModal("Erro", "Não foi possível remover o item de orçamento. Tente novamente.");
         }
     };
-    
-    // Exportar para PDF
-    const exportToPdf = async () => {
-        if (!currentProject) {
-            setInfoModalContent({ title: "Atenção", message: "Selecione um projeto para exportar." });
-            setShowInfoModal(true);
+
+    const addExpense = async () => {
+        if (!expenseData.description || !expenseData.totalValue || !currentProject) {
+            showMessageModal("Erro", "Preencha todos os campos obrigatórios da despesa.");
+            return;
+        }
+        if (isNaN(parseFloat(expenseData.totalValue))) {
+            showMessageModal("Erro", "O valor total da despesa deve ser um número.");
             return;
         }
 
-        setLoading(true);
+        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+
         try {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
-    
-            // Título do projeto
-            doc.setFontSize(22);
-            doc.text(`Relatório da Obra: ${currentProject.name}`, 14, 20);
-    
-            // Dados de resumo
-            doc.setFontSize(14);
-            const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
-            const remainingBudget = budget ? budget.amount - totalExpenses : 0;
+            await addDoc(expensesColRef, {
+                date: expenseData.date,
+                category: expenseData.category,
+                description: expenseData.description,
+                unit: expenseData.unit,
+                quantity: parseFloat(expenseData.quantity),
+                unitPrice: parseFloat(expenseData.unitPrice),
+                totalValue: parseFloat(expenseData.totalValue),
+                paymentMethod: expenseData.paymentMethod,
+                createdAt: new Date()
+            });
             
-            doc.text(`Orçamento Total: R$ ${budget ? budget.amount.toFixed(2) : '0.00'}`, 14, 30);
-            doc.text(`Total de Despesas: R$ ${totalExpenses.toFixed(2)}`, 14, 38);
-            doc.text(`Orçamento Restante: R$ ${remainingBudget.toFixed(2)}`, 14, 46);
-
-            // Tabela de despesas
-            const tableData = expenses.map(exp => [
-                new Date(exp.date).toLocaleDateString(),
-                exp.description,
-                exp.category,
-                `R$ ${parseFloat(exp.amount).toFixed(2)}`
-            ]);
-            doc.autoTable({
-                startY: 60,
-                head: [['Data', 'Descrição', 'Categoria', 'Valor']],
-                body: tableData,
-                theme: 'striped',
-                headStyles: { fillColor: '#10b981' }
+            // Reset expense data and close modal
+            setExpenseData({
+                date: format(new Date(), 'yyyy-MM-dd'),
+                category: 'Material',
+                description: '',
+                unit: 'Unidade',
+                quantity: 0,
+                unitPrice: 0,
+                totalValue: 0,
+                paymentMethod: 'Cartão de Crédito',
             });
+            setShowExpenseModal(false);
+            showMessageModal("Sucesso", "Despesa adicionada.");
+        } catch (e) {
+            console.error("Error adding expense: ", e);
+            showMessageModal("Erro", "Não foi possível adicionar a despesa. Tente novamente.");
+        }
+    };
 
-            doc.save(`relatorio_${currentProject.name.replace(/\s/g, '_')}.pdf`);
-        } catch (error) {
-            console.error("Erro ao gerar PDF:", error);
-            setInfoModalContent({ title: "Erro ao Gerar PDF", message: "Ocorreu um erro ao gerar o PDF. Detalhes: " + error.message });
-            setShowInfoModal(true);
-        } finally {
-            setLoading(false);
+    const deleteExpense = async (id) => {
+        if (!id || !currentProject) return;
+
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`, id);
+        try {
+            await deleteDoc(docRef);
+            showMessageModal("Sucesso", "Despesa removida.");
+        } catch (e) {
+            console.error("Error removing expense: ", e);
+            showMessageModal("Erro", "Não foi possível remover a despesa. Tente novamente.");
         }
     };
     
-    // Calcula o total de despesas para o gráfico e o resumo
-    const totalExpenses = expenses.reduce((sum, expense) => sum + parseFloat(expense.amount), 0);
-    const remainingBudget = budget ? budget.amount - totalExpenses : 0;
-    
-    // Dados para o Gráfico de Rosca
-    const chartData = {
-        labels: ['Despesas', 'Restante'],
-        datasets: [{
-            data: [totalExpenses, Math.max(0, remainingBudget)],
-            backgroundColor: ['#ef4444', '#10b981'],
-            hoverOffset: 4
-        }]
+    // --- Data Processing for Charts and Display ---
+    const filterAndSearchExpenses = () => {
+        let filtered = expenses.filter(expense => {
+            const matchesFilter = selectedFilter === 'all' || expense.category === selectedFilter;
+            const matchesSearch = searchTerm === '' || expense.description.toLowerCase().includes(searchTerm.toLowerCase());
+            return matchesFilter && matchesSearch;
+        });
+
+        // Sort by date in descending order
+        return filtered.sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime());
+    };
+
+    const totalBudget = budgets.reduce((sum, item) => sum + item.amount, 0);
+    const totalExpenses = expenses.reduce((sum, item) => sum + item.totalValue, 0);
+    const remainingBudget = totalBudget - totalExpenses;
+
+    const getDoughnutData = () => {
+        const materialExpenses = expenses
+            .filter(e => e.category === 'Material')
+            .reduce((sum, e) => sum + e.totalValue, 0);
+        const laborExpenses = expenses
+            .filter(e => e.category === 'Mão de Obra')
+            .reduce((sum, e) => sum + e.totalValue, 0);
+        const otherExpenses = expenses
+            .filter(e => e.category === 'Outros')
+            .reduce((sum, e) => sum + e.totalValue, 0);
+
+        return {
+            labels: ['Materiais', 'Mão de Obra', 'Outros'],
+            datasets: [
+                {
+                    data: [materialExpenses, laborExpenses, otherExpenses],
+                    backgroundColor: ['#3B82F6', '#22C55E', '#F97316'],
+                    borderColor: ['#ffffff'],
+                    borderWidth: 2,
+                },
+            ],
+        };
+    };
+
+    const getBudgetAllocationData = () => {
+        const labels = budgets.map(b => b.item);
+        const amounts = budgets.map(b => b.amount);
+        return {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Alocação do Orçamento',
+                    data: amounts,
+                    backgroundColor: '#10B981',
+                    borderColor: '#059669',
+                    borderWidth: 1,
+                },
+            ],
+        };
+    };
+
+    const getMonthlyExpensesData = () => {
+        const monthlyData = expenses.reduce((acc, expense) => {
+            const month = format(parseISO(expense.date), 'MM/yyyy');
+            acc[month] = (acc[month] || 0) + expense.totalValue;
+            return acc;
+        }, {});
+
+        const sortedMonths = Object.keys(monthlyData).sort((a, b) => {
+            const [monthA, yearA] = a.split('/').map(Number);
+            const [monthB, yearB] = b.split('/').map(Number);
+            if (yearA !== yearB) return yearA - yearB;
+            return monthA - monthB;
+        });
+
+        return {
+            labels: sortedMonths,
+            datasets: [
+                {
+                    label: 'Despesas por Mês',
+                    data: sortedMonths.map(month => monthlyData[month]),
+                    backgroundColor: '#EF4444',
+                    borderColor: '#B91C1C',
+                    borderWidth: 1,
+                },
+            ],
+        };
     };
     
-    // Filtra as despesas com base na categoria
-    const filteredExpenses = filter === 'all'
-        ? expenses
-        : expenses.filter(exp => exp.category === filter);
+    // --- Components ---
+    const AuthScreen = () => (
+        <div className="flex items-center justify-center h-screen bg-gray-100 p-4">
+            <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+                <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
+                    {authMode === 'login' ? 'Entrar' : 'Criar Conta'}
+                </h2>
+                <div className="space-y-4">
+                    <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="E-mail"
+                        className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <input
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Senha"
+                        className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                </div>
+                {authError && (
+                    <p className="text-red-500 text-sm mt-2 text-center">{authError}</p>
+                )}
+                <button
+                    onClick={handleAuthAction}
+                    className="w-full mt-6 bg-blue-600 text-white font-bold py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
+                >
+                    {authMode === 'login' ? 'Entrar' : 'Cadastrar'}
+                </button>
+                <div className="mt-4 text-center">
+                    <button
+                        onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
+                        className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
+                    >
+                        {authMode === 'login' ? 'Não tem uma conta? Cadastre-se' : 'Já tem uma conta? Entre'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 
-    // --- Renderização da UI (Lógica de Navegação) ---
+    const InfoModal = ({ title, message, onClose }) => {
+        return (
+            <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+                <div className="relative p-6 bg-white rounded-lg shadow-xl max-w-sm mx-auto text-center transform transition-all sm:my-8 sm:align-middle sm:max-w-lg">
+                    <h3 className="text-xl leading-6 font-bold text-gray-900 mb-4">{title}</h3>
+                    <div className="mt-2">
+                        <p className="text-sm text-gray-500 break-all">{message}</p>
+                    </div>
+                    <div className="mt-5 sm:mt-6">
+                        <button
+                            onClick={onClose}
+                            type="button"
+                            className="inline-flex justify-center w-full rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm"
+                        >
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const ExpenseModal = ({ onClose }) => {
+        const handleValueChange = (e) => {
+            const { name, value } = e.target;
+            setExpenseData(prev => {
+                const updatedData = { ...prev, [name]: value };
+                if (name === 'quantity' || name === 'unitPrice') {
+                    const quantity = parseFloat(updatedData.quantity) || 0;
+                    const unitPrice = parseFloat(updatedData.unitPrice) || 0;
+                    updatedData.totalValue = (quantity * unitPrice).toFixed(2);
+                }
+                return updatedData;
+            });
+        };
+
+        return (
+            <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+                <div className="relative bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-auto transform transition-all">
+                    <div className="flex justify-between items-center pb-3 border-b border-gray-200 mb-4">
+                        <h3 className="text-xl font-bold text-gray-900">Registrar Despesa</h3>
+                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+                            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Data</label>
+                            <input
+                                type="date"
+                                name="date"
+                                value={expenseData.date}
+                                onChange={handleValueChange}
+                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                            />
+                        </div>
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Categoria</label>
+                            <select
+                                name="category"
+                                value={expenseData.category}
+                                onChange={handleValueChange}
+                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <option value="Material">Material</option>
+                                <option value="Mão de Obra">Mão de Obra</option>
+                                <option value="Outros">Outros</option>
+                            </select>
+                        </div>
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Descrição</label>
+                            <input
+                                type="text"
+                                name="description"
+                                value={expenseData.description}
+                                onChange={handleValueChange}
+                                placeholder="Ex: Saco de Cimento"
+                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                            />
+                        </div>
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Unidade de Medida</label>
+                            <select
+                                name="unit"
+                                value={expenseData.unit}
+                                onChange={handleValueChange}
+                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <option value="Unidade">Unidade</option>
+                                <option value="Metro">Metro</option>
+                                <option value="Quilograma">Quilograma</option>
+                                <option value="Caixa">Caixa</option>
+                            </select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="flex flex-col">
+                                <label className="text-sm font-medium text-gray-700 mb-1">Quantidade</label>
+                                <input
+                                    type="number"
+                                    name="quantity"
+                                    value={expenseData.quantity}
+                                    onChange={handleValueChange}
+                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                            <div className="flex flex-col">
+                                <label className="text-sm font-medium text-gray-700 mb-1">Preço Unitário (R$)</label>
+                                <input
+                                    type="number"
+                                    name="unitPrice"
+                                    value={expenseData.unitPrice}
+                                    onChange={handleValueChange}
+                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+                        </div>
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Valor Total (R$)</label>
+                            <input
+                                type="text"
+                                name="totalValue"
+                                value={expenseData.totalValue}
+                                readOnly
+                                className="w-full px-4 py-2 rounded-lg bg-gray-100 border border-gray-300"
+                            />
+                        </div>
+                        <div className="flex flex-col">
+                            <label className="text-sm font-medium text-gray-700 mb-1">Forma de Pagamento</label>
+                            <select
+                                name="paymentMethod"
+                                value={expenseData.paymentMethod}
+                                onChange={handleValueChange}
+                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                            >
+                                <option value="Cartão de Crédito">Cartão de Crédito</option>
+                                <option value="Cartão de Débito">Cartão de Débito</option>
+                                <option value="Dinheiro">Dinheiro</option>
+                                <option value="PIX">PIX</option>
+                                <option value="Transferência Bancária">Transferência Bancária</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div className="mt-6 flex justify-end space-x-2">
+                        <button
+                            onClick={onClose}
+                            className="bg-gray-200 text-gray-800 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors"
+                        >
+                            Cancelar
+                        </button>
+                        <button
+                            onClick={addExpense}
+                            className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
+                        >
+                            Registrar Despesa
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    // --- Main Render Logic ---
     const renderContent = () => {
-        // Passo 1: Verifica o estado de carregamento inicial
         if (loading) {
             return (
-                <div className="flex items-center justify-center min-h-screen">
-                    <div className="text-center">
-                        <svg className="animate-spin h-8 w-8 text-green-500 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <p className="mt-4 text-gray-700 font-semibold">Carregando...</p>
+                <div className="flex items-center justify-center h-screen bg-gray-100">
+                    <div className="flex flex-col items-center">
+                        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                        <p className="text-gray-600 font-medium">Carregando...</p>
                     </div>
                 </div>
             );
         }
-        
-        // Passo 2: Se o carregamento terminou, verifica se o usuário está autenticado
+
         if (!user) {
-            // Se o usuário não estiver logado, mostra a tela de login ou de cadastro
-            return showRegister ? (
-                <div className="flex items-center justify-center min-h-screen bg-gray-100">
-                    <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
-                        <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Cadastro</h2>
-                        <form onSubmit={handleRegister} className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700">E-mail</label>
-                                <input type="email" name="email" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700">Senha</label>
-                                <input type="password" name="password" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <button type="submit" className="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-full hover:bg-green-700 transition">Cadastrar</button>
-                        </form>
-                        <p className="mt-4 text-center text-gray-600">
-                            Já tem uma conta? <a href="#" onClick={() => setShowRegister(false)} className="text-green-600 font-semibold hover:underline">Login</a>
-                        </p>
-                    </div>
-                </div>
-            ) : (
-                <div className="flex items-center justify-center min-h-screen bg-gray-100">
-                    <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
-                        <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Login</h2>
-                        <form onSubmit={handleLogin} className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700">E-mail</label>
-                                <input type="email" name="email" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700">Senha</label>
-                                <input type="password" name="password" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-full hover:bg-blue-700 transition">Entrar</button>
-                        </form>
-                        <p className="mt-4 text-center text-gray-600">
-                            Não tem uma conta? <a href="#" onClick={() => setShowRegister(true)} className="text-blue-600 font-semibold hover:underline">Cadastre-se</a>
-                        </p>
-                    </div>
-                </div>
-            );
-        } else if (!currentProject) {
-            // Passo 3: Se o usuário está logado mas não selecionou um projeto, mostra a lista de projetos
-            return (
-                <div className="w-full max-w-2xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
-                    <header className="flex justify-between items-center mb-6">
-                        <h1 className="text-3xl font-bold text-gray-800">Minhas Obras</h1>
-                        <button onClick={handleLogout} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition">
-                            Sair
-                        </button>
-                    </header>
-                    <div className="mb-8">
-                        <form onSubmit={handleAddProject} className="flex flex-col md:flex-row space-y-2 md:space-y-0 md:space-x-2">
-                            <input 
-                                type="text" 
-                                name="projectName" 
-                                placeholder="Nome da nova obra" 
-                                required 
-                                className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:ring-blue-500 focus:border-blue-500"
-                            />
-                            <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-full font-semibold hover:bg-blue-700 transition">
-                                Adicionar Obra
+            return <AuthScreen />;
+        }
+
+        return (
+            <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 sm:p-8">
+                <div className="w-full max-w-6xl bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col">
+                    
+                    {/* Header with Project Selection and Add Button */}
+                    <header className="bg-white p-4 sm:p-6 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
+                        <div className="flex items-center space-x-2 w-full sm:w-auto">
+                            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex-shrink-0">
+                                Gestão de Obra
+                            </h1>
+                            {projects.length > 0 && (
+                                <div className="flex-grow sm:flex-grow-0">
+                                    <select
+                                        value={currentProject ? currentProject.id : ''}
+                                        onChange={(e) => {
+                                            const selectedProject = projects.find(p => p.id === e.target.value);
+                                            setCurrentProject(selectedProject);
+                                        }}
+                                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                                    >
+                                        {projects.map(project => (
+                                            <option key={project.id} value={project.id}>{project.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex items-center space-x-2">
+                            {currentProject && (
+                                <button
+                                    onClick={() => deleteProject(currentProject.id)}
+                                    className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-red-600 transition-colors"
+                                >
+                                    Excluir Projeto
+                                </button>
+                            )}
+                            <button
+                                onClick={addProject}
+                                className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-blue-700 transition-colors"
+                            >
+                                Adicionar Novo Projeto
                             </button>
-                        </form>
-                    </div>
-                    <h2 className="text-xl font-bold text-gray-800 mb-4">Lista de Obras</h2>
-                    <ul className="space-y-4">
-                        {projects.length > 0 ? (
-                            projects.map(project => (
-                                <li key={project.id} className="bg-gray-50 p-6 rounded-xl shadow-md cursor-pointer hover:bg-gray-100 transition" onClick={() => handleSelectProject(project)}>
-                                    <h3 className="text-lg font-semibold text-gray-800">{project.name}</h3>
-                                    <p className="text-sm text-gray-500 mt-1">
-                                        Criado em: {new Date(project.createdAt).toLocaleDateString()}
-                                    </p>
-                                </li>
-                            ))
-                        ) : (
-                            <p className="text-center text-gray-500">Nenhuma obra encontrada. Adicione uma para começar!</p>
-                        )}
-                    </ul>
-                </div>
-            );
-        } else {
-            // Passo 4: Se o usuário está logado e um projeto foi selecionado, mostra o dashboard
-            return (
-                <div className="w-full max-w-5xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
-                    <header className="flex flex-col md:flex-row justify-between items-center mb-6">
-                        <h1 className="text-3xl font-bold text-gray-800 mb-4 md:mb-0">{currentProject.name}</h1>
-                        <div className="flex flex-col md:flex-row space-y-2 md:space-y-0 md:space-x-2 w-full md:w-auto">
-                            <button onClick={handleBackToProjects} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition w-full md:w-auto">
-                                Voltar para Obras
-                            </button>
-                            <button onClick={handleLogout} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition w-full md:w-auto">
+                            <button
+                                onClick={handleLogout}
+                                className="bg-gray-500 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-gray-600 transition-colors"
+                            >
                                 Sair
                             </button>
                         </div>
                     </header>
-                    
-                    <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                        <div className="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
-                            <span className="text-sm font-semibold text-gray-500">Orçamento Total</span>
-                            <span id="total-budget" className="text-2xl font-bold text-gray-800 mt-2">R$ {budget ? budget.amount.toFixed(2) : '0.00'}</span>
-                            <p className="text-xs text-gray-400 mt-1">{budget ? `${new Date(budget.startDate).toLocaleDateString()} - ${new Date(budget.endDate).toLocaleDateString()}` : 'Não configurado'}</p>
-                            <button onClick={() => setShowBudgetModal(true)} className="mt-3 text-blue-500 text-sm hover:underline">Configurar Orçamento</button>
+
+                    {/* Check if there is a project to display content */}
+                    {!currentProject ? (
+                        <div className="flex-grow flex items-center justify-center p-8">
+                            <p className="text-gray-500 text-lg">
+                                Crie um novo projeto para começar a gerenciar suas despesas e orçamentos.
+                            </p>
                         </div>
-                        <div className="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
-                            <span className="text-sm font-semibold text-gray-500">Total de Despesas</span>
-                            <span id="total-expenses" className="text-2xl font-bold text-red-600 mt-2">R$ {totalExpenses.toFixed(2)}</span>
-                        </div>
-                        <div className={`bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center ${budget ? '' : 'hidden'}`}>
-                            <span className="text-sm font-semibold text-gray-500">Orçamento Restante</span>
-                            <span id="remaining-budget" className={`text-2xl font-bold mt-2 ${remainingBudget >= 0 ? 'text-green-600' : 'text-red-600'}`}>R$ {remainingBudget.toFixed(2)}</span>
-                        </div>
-                    </section>
-            
-                    <section className="bg-gray-50 p-6 rounded-xl shadow-md mb-8">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4">Análise de Orçamento</h2>
-                        <div className="w-full h-64 flex justify-center items-center">
-                            <Doughnut data={chartData} options={{ maintainAspectRatio: false }} />
-                        </div>
-                    </section>
-            
-                    <section className="bg-gray-50 p-6 rounded-xl shadow-md">
-                        <div className="flex flex-col md:flex-row justify-between items-center mb-4 space-y-2 md:space-y-0">
-                            <h2 className="text-xl font-bold text-gray-800 mb-2 md:mb-0">Histórico de Despesas</h2>
-                            <div className="flex flex-col md:flex-row items-center space-y-2 md:space-y-0 md:space-x-4 w-full md:w-auto">
-                                <select value={filter} onChange={(e) => setFilter(e.target.value)} className="form-select border border-gray-300 rounded-lg p-2 text-sm font-medium focus:ring-blue-500 focus:border-blue-500 w-full md:w-auto">
-                                    <option value="all">Todas as Categorias</option>
-                                    <option value="Material">Material</option>
-                                    <option value="Mão de Obra">Mão de Obra</option>
-                                    <option value="Equipamento">Equipamento</option>
-                                    <option value="Serviços">Serviços</option>
-                                    <option value="Outros">Outros</option>
-                                </select>
-                                <button onClick={() => setShowExpenseModal(true)} className="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-green-700 transition w-full md:w-auto">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" />
-                                    </svg>
-                                    <span>Nova Despesa</span>
-                                </button>
-                                <button onClick={exportToPdf} className="flex items-center space-x-2 bg-red-500 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-red-600 transition w-full md:w-auto">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L6.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <span>Exportar PDF</span>
-                                </button>
-                            </div>
-                        </div>
-                        <ul id="expense-list" className="space-y-4">
-                            {filteredExpenses.length > 0 ? (
-                                filteredExpenses.map(expense => (
-                                    <li key={expense.id} className="flex flex-col md:flex-row items-start md:items-center justify-between p-4 bg-gray-50 rounded-lg shadow-sm">
-                                        <div className="flex-1 w-full md:w-auto">
-                                            <span className="font-semibold text-gray-800">{expense.description}</span>
-                                            <span className="block text-sm text-gray-500">{new Date(expense.date).toLocaleDateString()}</span>
-                                            <span className="block text-xs font-medium text-gray-600 rounded-full px-2 py-1 mt-1 bg-gray-200 inline-block">{expense.category}</span>
+                    ) : (
+                        <div className="flex flex-col flex-grow">
+                            {/* Tab Navigation */}
+                            <nav className="bg-gray-50 border-b border-gray-200">
+                                <div className="flex justify-center sm:justify-start -mb-px">
+                                    <button
+                                        onClick={() => setActiveTab('dashboard')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'dashboard' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Painel de Controle
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('budget')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'budget' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Orçamento
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('expenses')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'expenses' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Despesas
+                                    </button>
+                                </div>
+                            </nav>
+        
+                            {/* Main Content based on active tab */}
+                            <div className="p-4 sm:p-8 flex-grow overflow-y-auto">
+                                {activeTab === 'dashboard' && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-semibold mb-2 text-gray-800">Resumo Financeiro</h2>
+                                            <p className="text-sm sm:text-base text-gray-600">Orçamento Total: <span className="font-bold text-green-600">R$ {totalBudget.toFixed(2)}</span></p>
+                                            <p className="text-sm sm:text-base text-gray-600">Total de Despesas: <span className="font-bold text-red-600">R$ {totalExpenses.toFixed(2)}</span></p>
+                                            <p className="text-sm sm:text-base text-gray-600">
+                                                Orçamento Restante: 
+                                                <span className={`font-bold ${remainingBudget >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                    R$ {remainingBudget.toFixed(2)}
+                                                </span>
+                                            </p>
                                         </div>
-                                        <div className="flex items-center space-x-2 mt-2 md:mt-0">
-                                            <span className="text-lg font-bold text-red-600">R$ {parseFloat(expense.amount).toFixed(2)}</span>
-                                            <button onClick={() => {
-                                                setConfirmationAction(() => () => handleDeleteExpense(expense.id));
-                                                setShowConfirmationModal(true);
-                                            }} className="text-red-500 hover:text-red-700 p-2">
-                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                                    <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                                                </svg>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
+                                            <div className="w-full max-w-xs">
+                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas por Categoria</h2>
+                                                {expenses.length > 0 ? (
+                                                    <Doughnut data={getDoughnutData()} />
+                                                ) : (
+                                                    <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
+                                                )}
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
+                                            <div className="w-full">
+                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Orçamento por Item</h2>
+                                                {budgets.length > 0 ? (
+                                                    <Bar 
+                                                        data={getBudgetAllocationData()}
+                                                        options={{ responsive: true, maintainAspectRatio: true }}
+                                                    />
+                                                ) : (
+                                                    <p className="text-center text-sm text-gray-500">Nenhum item de orçamento para exibir.</p>
+                                                )}
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 col-span-1 md:col-span-2 lg:col-span-3">
+                                            <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas ao Longo do Tempo</h2>
+                                            {expenses.length > 0 ? (
+                                                <Bar
+                                                    data={getMonthlyExpensesData()}
+                                                    options={{ responsive: true, maintainAspectRatio: true }}
+                                                />
+                                            ) : (
+                                                <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+        
+                                {activeTab === 'budget' && (
+                                    <div className="space-y-8">
+                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Item ao Orçamento</h2>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                <input
+                                                    type="text"
+                                                    value={budgetItem}
+                                                    onChange={(e) => setBudgetItem(e.target.value)}
+                                                    placeholder="Item (Ex: Telhado)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    value={budgetAmount}
+                                                    onChange={(e) => setBudgetAmount(e.target.value)}
+                                                    placeholder="Valor (R$)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <button onClick={addBudgetItem} className="w-full bg-green-500 text-white font-medium py-2 rounded-lg shadow-md hover:bg-green-600 transition-colors">
+                                                    Adicionar
+                                                </button>
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Itens do Orçamento</h2>
+                                            <div className="overflow-x-auto">
+                                                <table className="min-w-full divide-y divide-gray-200">
+                                                    <thead>
+                                                        <tr className="bg-gray-50">
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Item
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Valor (R$)
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Ações
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="bg-white divide-y divide-gray-200">
+                                                        {budgets.length > 0 ? (
+                                                            budgets.map(budget => (
+                                                                <tr key={budget.id}>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{budget.item}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{budget.amount.toFixed(2)}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                                        <button onClick={() => deleteBudgetItem(budget.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))
+                                                        ) : (
+                                                            <tr>
+                                                                <td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Nenhum item de orçamento registrado ainda.</td>
+                                                            </tr>
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+        
+                                {activeTab === 'expenses' && (
+                                    <div className="space-y-8">
+                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Nova Despesa</h2>
+                                            <button 
+                                                onClick={() => setShowExpenseModal(true)}
+                                                className="w-full bg-blue-600 text-white font-medium py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
+                                            >
+                                                Registrar Nova Despesa
                                             </button>
                                         </div>
-                                    </li>
-                                ))
-                            ) : (
-                                <li className="px-6 py-4 text-center text-sm text-gray-500">
-                                    Nenhuma despesa registrada ainda.
-                                </li>
-                            )}
-                        </ul>
-                    </section>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Registro de Despesas</h2>
+                                            <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 mb-4">
+                                                <div className="flex-grow">
+                                                    <input
+                                                        type="text"
+                                                        value={searchTerm}
+                                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                                        placeholder="Buscar por descrição..."
+                                                        className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                    />
+                                                </div>
+                                                <select
+                                                    value={selectedFilter}
+                                                    onChange={(e) => setSelectedFilter(e.target.value)}
+                                                    className="w-full sm:w-auto px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                >
+                                                    <option value="all">Todas as Despesas</option>
+                                                    <option value="Material">Material</option>
+                                                    <option value="Mão de Obra">Mão de Obra</option>
+                                                    <option value="Outros">Outros</option>
+                                                </select>
+                                            </div>
+                                            <div className="overflow-x-auto">
+                                                <table className="min-w-full divide-y divide-gray-200">
+                                                    <thead>
+                                                        <tr className="bg-gray-50">
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Data
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Descrição
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Tipo
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Valor (R$)
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Ações
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="bg-white divide-y divide-gray-200">
+                                                        {filterAndSearchExpenses().length > 0 ? (
+                                                            filterAndSearchExpenses().map(expense => (
+                                                                <tr key={expense.id}>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{format(parseISO(expense.date), 'dd/MM/yyyy')}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{expense.description}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.category}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.totalValue.toFixed(2)}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                                        <button onClick={() => deleteExpense(expense.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))
+                                                        ) : (
+                                                            <tr>
+                                                                <td colSpan="5" className="px-6 py-4 text-center text-sm text-gray-500">
+                                                                    {expenses.length === 0 ? 'Nenhuma despesa registrada ainda.' : 'Nenhum resultado encontrado.'}
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <footer className="mt-auto pt-4 pb-2 border-t border-gray-200 text-center bg-gray-50">
+                        <p className="text-gray-500 text-xs">
+                            ID do Usuário: <span className="font-mono break-all">{userId}</span>
+                        </p>
+                    </footer>
                 </div>
-            );
-        }
+            </div>
+        );
     };
 
     return (
         <>
-            {/* Renderiza o conteúdo da página com base no estado atual */}
             {renderContent()}
-
-            {/* Modal para Adicionar Despesa */}
-            {showExpenseModal && (
-                <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-40 p-4">
-                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-lg font-bold">Adicionar Nova Despesa</h3>
-                            <button onClick={() => setShowExpenseModal(false)} className="text-gray-500 hover:text-gray-700">
-                                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-                        <form onSubmit={handleAddExpense}>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Descrição</label>
-                                <input type="text" name="description" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Valor (R$)</label>
-                                <input type="number" name="amount" step="0.01" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Categoria</label>
-                                <select name="category" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                                    <option value="Material">Material</option>
-                                    <option value="Mão de Obra">Mão de Obra</option>
-                                    <option value="Equipamento">Equipamento</option>
-                                    <option value="Serviços">Serviços</option>
-                                    <option value="Outros">Outros</option>
-                                </select>
-                            </div>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Data</label>
-                                <input type="date" name="date" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <button type="submit" className="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-full hover:bg-green-700 transition">Adicionar Despesa</button>
-                        </form>
-                    </div>
-                </div>
-            )}
-            
-            {/* Modal para Configurar Orçamento */}
-            {showBudgetModal && (
-                <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-40 p-4">
-                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-lg font-bold">Configurar Orçamento</h3>
-                            <button onClick={() => setShowBudgetModal(false)} className="text-gray-500 hover:text-gray-700">
-                                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-                        <form onSubmit={handleAddBudget}>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Valor do Orçamento (R$)</label>
-                                <input type="number" name="amount" step="0.01" defaultValue={budget ? budget.amount : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Início do Período</label>
-                                <input type="date" name="startDate" defaultValue={budget ? budget.startDate : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <div className="mb-4">
-                                <label className="block text-sm font-semibold text-gray-700">Fim do Período</label>
-                                <input type="date" name="endDate" defaultValue={budget ? budget.endDate : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
-                            </div>
-                            <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-full hover:bg-blue-700 transition">Salvar Orçamento</button>
-                        </form>
-                    </div>
-                </div>
-            )}
-            
             {showInfoModal && (
                 <InfoModal
                     title={infoModalContent.title}
@@ -708,20 +1016,9 @@ const App = () => {
                     onClose={() => setShowInfoModal(false)}
                 />
             )}
-            
-            {showConfirmationModal && (
-                <ConfirmationModal
-                    message="Tem certeza que deseja excluir esta despesa?"
-                    onConfirm={() => { confirmationAction(); setShowConfirmationModal(false); }}
-                    onCancel={() => setShowConfirmationModal(false)}
-                />
+            {showExpenseModal && (
+                <ExpenseModal onClose={() => setShowExpenseModal(false)} />
             )}
-            
-            <footer className="mt-8 pt-4 border-t border-gray-200 text-center">
-                <p className="text-gray-500 text-xs">
-                    ID do Usuário: <span className="font-mono break-all">{userId}</span>
-                </p>
-            </footer>
         </>
     );
 };
