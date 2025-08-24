@@ -1,1026 +1,625 @@
-import { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-    getAuth, 
-    signInWithCustomToken, 
-    onAuthStateChanged, 
-    signInAnonymously,
-    createUserWithEmailAndPassword,
-    signInWithEmailAndPassword,
-    signOut
-} from 'firebase/auth';
-import { 
-    getFirestore, 
-    doc, 
-    setDoc, 
-    onSnapshot, 
-    collection, 
-    query, 
-    addDoc, 
-    deleteDoc,
-    getDocs,
-    where,
-    runTransaction
-} from 'firebase/firestore';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
-import { Doughnut, Bar } from 'react-chartjs-2';
-import { format, parseISO } from 'date-fns';
-
-// Register Chart.js components
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
-
-// Placeholder para as variáveis globais
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-// The main App component
-const App = () => {
-    // --- Authentication and Project State ---
-    const [user, setUser] = useState(null);
-    const [userId, setUserId] = useState(null);
-    const [db, setDb] = useState(null);
-    const [auth, setAuth] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [currentProject, setCurrentProject] = useState(null);
-    const [projects, setProjects] = useState([]);
-    const [authMode, setAuthMode] = useState('login'); // 'login' or 'register'
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [authError, setAuthError] = useState('');
-
-    // --- Data and UI State ---
-    const [expenses, setExpenses] = useState([]);
-    const [budgetItem, setBudgetItem] = useState('');
-    const [budgetAmount, setBudgetAmount] = useState('');
-    const [budgets, setBudgets] = useState([]);
-    const [expenseDescription, setExpenseDescription] = useState('');
-    const [expenseAmount, setExpenseAmount] = useState('');
-    const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
-    const [selectedFilter, setSelectedFilter] = useState('all');
-    const [showInfoModal, setShowInfoModal] = useState(false);
-    const [infoModalContent, setInfoModalContent] = useState({ title: '', message: '' });
-    const [activeTab, setActiveTab] = useState('dashboard');
-    const [searchTerm, setSearchTerm] = useState('');
-    const [expenseType, setExpenseType] = useState('Material');
-    const [showExpenseModal, setShowExpenseModal] = useState(false);
-    const [expenseData, setExpenseData] = useState({
-        date: format(new Date(), 'yyyy-MM-dd'),
-        category: 'Material',
-        description: '',
-        unit: 'Unidade',
-        quantity: 0,
-        unitPrice: 0,
-        totalValue: 0,
-        paymentMethod: 'Cartão de Crédito',
-    });
-
-    // --- Refs ---
-    const mainContainerRef = useRef(null);
-
-    // --- Firebase Initialization and Authentication ---
-    useEffect(() => {
-        const initializeFirebase = async () => {
-            if (Object.keys(firebaseConfig).length === 0) {
-                console.error("Firebase config is missing.");
-                setLoading(false);
-                return;
-            }
-
-            try {
-                const app = initializeApp(firebaseConfig);
-                const firestore = getFirestore(app);
-                const authInstance = getAuth(app);
-                
-                setDb(firestore);
-                setAuth(authInstance);
-
-                // Listen for authentication state changes
-                const unsubscribe = onAuthStateChanged(authInstance, async (currentUser) => {
-                    if (currentUser) {
-                        setUser(currentUser);
-                        setUserId(currentUser.uid);
-                    } else {
-                        setUser(null);
-                        setUserId(null);
-                    }
-                    setLoading(false);
-                });
-
-                return () => unsubscribe();
-            } catch (error) {
-                console.error("Error initializing Firebase:", error);
-                setInfoModalContent({
-                    title: "Erro de Inicialização",
-                    message: "Não foi possível conectar ao Firebase. Verifique sua conexão e tente novamente."
-                });
-                setShowInfoModal(true);
-                setLoading(false);
-            }
-        };
-
-        initializeFirebase();
-    }, []);
-
-    // --- Real-time data listener ---
-    useEffect(() => {
-        if (!db || !userId) {
-            setProjects([]);
-            setExpenses([]);
-            setBudgets([]);
-            setCurrentProject(null);
-            return;
-        }
-
-        // Listener for projects
-        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
-        const projectsUnsubscribe = onSnapshot(projectsColRef, (snapshot) => {
-            const projectsData = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            setProjects(projectsData);
-            if (!currentProject && projectsData.length > 0) {
-                setCurrentProject(projectsData[0]);
-            } else if (currentProject && !projectsData.find(p => p.id === currentProject.id)) {
-                setCurrentProject(projectsData.length > 0 ? projectsData[0] : null);
-            }
-        }, (error) => {
-            console.error("Error listening to projects:", error);
-            setInfoModalContent({
-                title: "Erro de Sincronização",
-                message: "Não foi possível sincronizar os projetos. Tente recarregar a página."
-            });
-            setShowInfoModal(true);
-        });
-
-        return () => {
-            projectsUnsubscribe();
-        };
-    }, [db, userId, currentProject]);
-
-    // Listener for expenses and budgets
-    useEffect(() => {
-        if (!db || !userId || !currentProject) {
-            setExpenses([]);
-            setBudgets([]);
-            return;
-        }
-
-        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
-        const expensesUnsubscribe = onSnapshot(expensesColRef, (snapshot) => {
-            const expensesData = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            setExpenses(expensesData);
-        }, (error) => {
-            console.error("Error listening to expenses:", error);
-        });
-
-        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
-        const budgetsUnsubscribe = onSnapshot(budgetsColRef, (snapshot) => {
-            const budgetsData = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            setBudgets(budgetsData);
-        }, (error) => {
-            console.error("Error listening to budgets:", error);
-        });
-
-        return () => {
-            expensesUnsubscribe();
-            budgetsUnsubscribe();
-        };
-    }, [db, userId, currentProject]);
-
-    // --- Helper Functions ---
-    const showMessageModal = (title, message) => {
-        setInfoModalContent({ title, message });
-        setShowInfoModal(true);
-    };
-
-    // --- Authentication Logic ---
-    const handleAuthAction = async () => {
-        setAuthError('');
-        if (!email || !password) {
-            setAuthError('E-mail e senha são obrigatórios.');
-            return;
-        }
-
-        try {
-            if (authMode === 'register') {
-                await createUserWithEmailAndPassword(auth, email, password);
-                showMessageModal("Sucesso", "Usuário cadastrado com sucesso! Você já está logado.");
-            } else {
-                await signInWithEmailAndPassword(auth, email, password);
-                showMessageModal("Sucesso", "Login realizado com sucesso!");
-            }
-        } catch (error) {
-            console.error("Authentication error:", error);
-            setAuthError(error.message);
-        }
-    };
-
-    const handleLogout = async () => {
-        try {
-            await signOut(auth);
-            showMessageModal("Sucesso", "Logout realizado.");
-        } catch (error) {
-            console.error("Logout error:", error);
-            showMessageModal("Erro", "Não foi possível fazer logout. Tente novamente.");
-        }
-    };
-
-    // --- CRUD Operations ---
-    const addProject = async () => {
-        if (!db || !userId) {
-            showMessageModal("Erro", "Não foi possível adicionar o projeto. Tente novamente.");
-            return;
-        }
-
-        const newProjectName = prompt("Digite o nome do novo projeto:");
-        if (!newProjectName) return;
-
-        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
-        const docRef = doc(projectsColRef);
-
-        try {
-            await setDoc(docRef, { name: newProjectName, createdAt: new Date() });
-            showMessageModal("Sucesso", `Projeto "${newProjectName}" criado com sucesso!`);
-            setCurrentProject({ id: docRef.id, name: newProjectName });
-            setActiveTab('budget'); // Switch to budget tab after creating a new project
-        } catch (e) {
-            console.error("Error adding project: ", e);
-            showMessageModal("Erro", "Não foi possível criar o projeto. Verifique a sua conexão.");
-        }
-    };
-
-    const deleteProject = async (projectId) => {
-        if (!db || !userId || !projectId) {
-            showMessageModal("Erro", "Não foi possível remover o projeto. Tente novamente.");
-            return;
-        }
-
-        if (!window.confirm("Tem certeza que deseja remover este projeto e todos os seus dados?")) {
-            return;
-        }
-
-        try {
-            // Delete expenses subcollection
-            const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/expenses`);
-            const expenseDocs = await getDocs(expensesColRef);
-            await Promise.all(expenseDocs.docs.map(doc => deleteDoc(doc.ref)));
-
-            // Delete budgets subcollection
-            const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/budgets`);
-            const budgetDocs = await getDocs(budgetsColRef);
-            await Promise.all(budgetDocs.docs.map(doc => deleteDoc(doc.ref)));
-
-            // Delete the project document itself
-            const projectDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${projectId}`);
-            await deleteDoc(projectDocRef);
-
-            // After deletion, switch to the first project in the list or null if none exist
-            setProjects(prevProjects => {
-                const updatedProjects = prevProjects.filter(p => p.id !== projectId);
-                if (updatedProjects.length > 0) {
-                    setCurrentProject(updatedProjects[0]);
-                } else {
-                    setCurrentProject(null);
-                }
-                return updatedProjects;
-            });
-
-            showMessageModal("Sucesso", "Projeto removido com sucesso!");
-        } catch (e) {
-            console.error("Error removing project: ", e);
-            showMessageModal("Erro", "Não foi possível remover o projeto. Verifique a sua conexão.");
-        }
-    };
-
-    const addBudgetItem = async () => {
-        if (!budgetItem || !budgetAmount || !currentProject) {
-            showMessageModal("Erro", "Preencha todos os campos do orçamento.");
-            return;
-        }
-        if (isNaN(parseFloat(budgetAmount))) {
-            showMessageModal("Erro", "O valor do orçamento deve ser um número.");
-            return;
-        }
-
-        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
-
-        try {
-            await addDoc(budgetsColRef, {
-                item: budgetItem,
-                amount: parseFloat(budgetAmount),
-                createdAt: new Date()
-            });
-            setBudgetItem('');
-            setBudgetAmount('');
-            showMessageModal("Sucesso", "Item de orçamento adicionado.");
-        } catch (e) {
-            console.error("Error adding budget item: ", e);
-            showMessageModal("Erro", "Não foi possível adicionar o item de orçamento. Tente novamente.");
-        }
-    };
-
-    const deleteBudgetItem = async (id) => {
-        if (!id || !currentProject) return;
-
-        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`, id);
-        try {
-            await deleteDoc(docRef);
-            showMessageModal("Sucesso", "Item de orçamento removido.");
-        } catch (e) {
-            console.error("Error removing budget item: ", e);
-            showMessageModal("Erro", "Não foi possível remover o item de orçamento. Tente novamente.");
-        }
-    };
-
-    const addExpense = async () => {
-        if (!expenseData.description || !expenseData.totalValue || !currentProject) {
-            showMessageModal("Erro", "Preencha todos os campos obrigatórios da despesa.");
-            return;
-        }
-        if (isNaN(parseFloat(expenseData.totalValue))) {
-            showMessageModal("Erro", "O valor total da despesa deve ser um número.");
-            return;
-        }
-
-        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
-
-        try {
-            await addDoc(expensesColRef, {
-                date: expenseData.date,
-                category: expenseData.category,
-                description: expenseData.description,
-                unit: expenseData.unit,
-                quantity: parseFloat(expenseData.quantity),
-                unitPrice: parseFloat(expenseData.unitPrice),
-                totalValue: parseFloat(expenseData.totalValue),
-                paymentMethod: expenseData.paymentMethod,
-                createdAt: new Date()
-            });
-            
-            // Reset expense data and close modal
-            setExpenseData({
-                date: format(new Date(), 'yyyy-MM-dd'),
-                category: 'Material',
-                description: '',
-                unit: 'Unidade',
-                quantity: 0,
-                unitPrice: 0,
-                totalValue: 0,
-                paymentMethod: 'Cartão de Crédito',
-            });
-            setShowExpenseModal(false);
-            showMessageModal("Sucesso", "Despesa adicionada.");
-        } catch (e) {
-            console.error("Error adding expense: ", e);
-            showMessageModal("Erro", "Não foi possível adicionar a despesa. Tente novamente.");
-        }
-    };
-
-    const deleteExpense = async (id) => {
-        if (!id || !currentProject) return;
-
-        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`, id);
-        try {
-            await deleteDoc(docRef);
-            showMessageModal("Sucesso", "Despesa removida.");
-        } catch (e) {
-            console.error("Error removing expense: ", e);
-            showMessageModal("Erro", "Não foi possível remover a despesa. Tente novamente.");
-        }
-    };
-    
-    // --- Data Processing for Charts and Display ---
-    const filterAndSearchExpenses = () => {
-        let filtered = expenses.filter(expense => {
-            const matchesFilter = selectedFilter === 'all' || expense.category === selectedFilter;
-            const matchesSearch = searchTerm === '' || expense.description.toLowerCase().includes(searchTerm.toLowerCase());
-            return matchesFilter && matchesSearch;
-        });
-
-        // Sort by date in descending order
-        return filtered.sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime());
-    };
-
-    const totalBudget = budgets.reduce((sum, item) => sum + item.amount, 0);
-    const totalExpenses = expenses.reduce((sum, item) => sum + item.totalValue, 0);
-    const remainingBudget = totalBudget - totalExpenses;
-
-    const getDoughnutData = () => {
-        const materialExpenses = expenses
-            .filter(e => e.category === 'Material')
-            .reduce((sum, e) => sum + e.totalValue, 0);
-        const laborExpenses = expenses
-            .filter(e => e.category === 'Mão de Obra')
-            .reduce((sum, e) => sum + e.totalValue, 0);
-        const otherExpenses = expenses
-            .filter(e => e.category === 'Outros')
-            .reduce((sum, e) => sum + e.totalValue, 0);
-
-        return {
-            labels: ['Materiais', 'Mão de Obra', 'Outros'],
-            datasets: [
-                {
-                    data: [materialExpenses, laborExpenses, otherExpenses],
-                    backgroundColor: ['#3B82F6', '#22C55E', '#F97316'],
-                    borderColor: ['#ffffff'],
-                    borderWidth: 2,
-                },
-            ],
-        };
-    };
-
-    const getBudgetAllocationData = () => {
-        const labels = budgets.map(b => b.item);
-        const amounts = budgets.map(b => b.amount);
-        return {
-            labels: labels,
-            datasets: [
-                {
-                    label: 'Alocação do Orçamento',
-                    data: amounts,
-                    backgroundColor: '#10B981',
-                    borderColor: '#059669',
-                    borderWidth: 1,
-                },
-            ],
-        };
-    };
-
-    const getMonthlyExpensesData = () => {
-        const monthlyData = expenses.reduce((acc, expense) => {
-            const month = format(parseISO(expense.date), 'MM/yyyy');
-            acc[month] = (acc[month] || 0) + expense.totalValue;
-            return acc;
-        }, {});
-
-        const sortedMonths = Object.keys(monthlyData).sort((a, b) => {
-            const [monthA, yearA] = a.split('/').map(Number);
-            const [monthB, yearB] = b.split('/').map(Number);
-            if (yearA !== yearB) return yearA - yearB;
-            return monthA - monthB;
-        });
-
-        return {
-            labels: sortedMonths,
-            datasets: [
-                {
-                    label: 'Despesas por Mês',
-                    data: sortedMonths.map(month => monthlyData[month]),
-                    backgroundColor: '#EF4444',
-                    borderColor: '#B91C1C',
-                    borderWidth: 1,
-                },
-            ],
-        };
-    };
-    
-    // --- Components ---
-    const AuthScreen = () => (
-        <div className="flex items-center justify-center h-screen bg-gray-100 p-4">
-            <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
-                <h2 className="text-2xl font-bold text-center mb-6 text-gray-800">
-                    {authMode === 'login' ? 'Entrar' : 'Criar Conta'}
-                </h2>
-                <div className="space-y-4">
-                    <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="E-mail"
-                        className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                    <input
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        placeholder="Senha"
-                        className="w-full px-4 py-3 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                    />
-                </div>
-                {authError && (
-                    <p className="text-red-500 text-sm mt-2 text-center">{authError}</p>
-                )}
-                <button
-                    onClick={handleAuthAction}
-                    className="w-full mt-6 bg-blue-600 text-white font-bold py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
-                >
-                    {authMode === 'login' ? 'Entrar' : 'Cadastrar'}
-                </button>
-                <div className="mt-4 text-center">
-                    <button
-                        onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                        className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
-                    >
-                        {authMode === 'login' ? 'Não tem uma conta? Cadastre-se' : 'Já tem uma conta? Entre'}
-                    </button>
-                </div>
-            </div>
+<>
+  <meta charSet="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gestão de Obra Simplificada</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
+  <style
+    dangerouslySetInnerHTML={{
+      __html:
+        "\n        body {\n            font-family: 'Inter', sans-serif;\n            background-color: #f0f4f8; /* Cor de fundo suave */\n        }\n        .container {\n            max-width: 1000px;\n        }\n        .card {\n            background-color: #ffffff;\n            border-radius: 1.5rem; /* Borda mais arredondada */\n            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.08);\n            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;\n            cursor: pointer;\n        }\n        .card:hover {\n            transform: translateY(-5px);\n            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);\n        }\n        .btn-primary {\n            background-color: #4f46e5; /* Índigo */\n            color: #ffffff;\n            border-radius: 9999px; /* Botão completamente arredondado */\n            transition: background-color 0.2s ease-in-out;\n        }\n        .btn-primary:hover {\n            background-color: #4338ca;\n        }\n        .btn-secondary {\n            background-color: #e2e8f0;\n            color: #4a5568;\n            border-radius: 9999px;\n            transition: background-color 0.2s ease-in-out;\n        }\n        .btn-secondary:hover {\n            background-color: #cbd5e0;\n        }\n        input, select, textarea {\n            border-radius: 0.75rem;\n            border: 1px solid #d1d5db;\n            padding: 0.75rem;\n            width: 100%;\n            background-color: #f9fafb;\n        }\n        input:focus, select:focus, textarea:focus {\n            outline: none;\n            border-color: #4f46e5;\n            box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);\n        }\n        .modal {\n            background-color: rgba(0, 0, 0, 0.5);\n        }\n        .modal-content {\n            background-color: #ffffff;\n            border-radius: 1.5rem;\n            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);\n            padding: 2rem;\n        }\n        table {\n            border-collapse: collapse;\n            width: 100%;\n        }\n        th, td {\n            text-align: left;\n            padding: 12px;\n            border-bottom: 1px solid #e5e7eb;\n        }\n        th {\n            background-color: #e2e8f0;\n            font-weight: 600;\n        }\n        tr:hover {\n            background-color: #f1f5f9;\n        }\n        .loading-overlay {\n            position: fixed;\n            top: 0;\n            left: 0;\n            width: 100%;\n            height: 100%;\n            background-color: rgba(255, 255, 255, 0.8);\n            display: flex;\n            flex-direction: column;\n            justify-content: center;\n            align-items: center;\n            z-index: 100;\n            font-size: 2rem;\n            color: #4f46e5;\n        }\n    "
+    }}
+  />
+  <div id="loadingOverlay" className="loading-overlay">
+    <p id="loadingMessage">Carregando dados da obra...</p>
+    <p className="text-sm text-gray-500 mt-2">
+      Isso pode levar alguns segundos na primeira vez.
+    </p>
+  </div>
+  <div
+    id="messageModal"
+    className="modal fixed inset-0 z-50 flex items-center justify-center p-4 hidden"
+  >
+    <div className="modal-content w-full max-w-sm text-center">
+      <h3 id="messageTitle" className="text-xl font-bold mb-4 text-gray-800" />
+      <p id="messageText" className="text-gray-600 mb-6" />
+      <button
+        id="closeMessageBtn"
+        className="btn-primary w-full py-2 font-semibold"
+      >
+        OK
+      </button>
+    </div>
+  </div>
+  <div
+    id="confirmModal"
+    className="modal fixed inset-0 z-50 flex items-center justify-center p-4 hidden"
+  >
+    <div className="modal-content w-full max-w-sm text-center">
+      <h3 className="text-xl font-bold mb-4 text-gray-800">Confirmação</h3>
+      <p id="confirmText" className="text-gray-600 mb-6">
+        Tem certeza que deseja excluir esta despesa?
+      </p>
+      <div className="flex justify-around space-x-4">
+        <button
+          id="confirmYesBtn"
+          className="btn-primary w-1/2 py-2 font-semibold"
+        >
+          Sim
+        </button>
+        <button
+          id="confirmNoBtn"
+          className="btn-1/2 py-2 font-semibold bg-gray-300 hover:bg-gray-400 text-gray-800 rounded-full"
+        >
+          Não
+        </button>
+      </div>
+    </div>
+  </div>
+  <div id="mainContainer" className="container mx-auto hidden">
+    <header className="text-center mb-12">
+      <h1 className="text-4xl md:text-5xl font-bold text-gray-800 mb-2">
+        Gestão de Obra <span className="text-indigo-500">(Simplificada)</span>
+      </h1>
+      <p className="text-lg text-gray-600">Simples, organizado e eficiente.</p>
+    </header>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-6 mb-8">
+      <div
+        id="newExpenseCard"
+        className="card p-6 flex flex-col items-center text-center lg:col-span-1"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="w-16 h-16 text-indigo-500 mb-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <line x1={12} y1={5} x2={12} y2={19} />
+          <line x1={5} y1={12} x2={19} y2={12} />
+        </svg>
+        <h3 className="text-xl font-semibold text-gray-700">Nova Despesa</h3>
+        <p className="text-gray-500 text-sm mt-1">Registrar um novo gasto.</p>
+      </div>
+      <div
+        id="budgetDisplayCard"
+        className="card p-6 flex flex-col justify-center lg:col-span-1"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+          <div>
+            <p className="text-gray-500 text-sm">Previsto</p>
+            <p
+              id="budgetedValue"
+              className="text-2xl font-bold text-green-600 mt-1"
+            >
+              R$ 0,00
+            </p>
+          </div>
+          <div>
+            <p className="text-gray-500 text-sm">Realizado</p>
+            <p
+              id="actualValue"
+              className="text-2xl font-bold text-red-600 mt-1"
+            >
+              R$ 0,00
+            </p>
+          </div>
+          <div>
+            <p className="text-gray-500 text-sm">Saldo</p>
+            <p
+              id="balanceValue"
+              className="text-2xl font-bold text-gray-800 mt-1"
+            >
+              R$ 0,00
+            </p>
+          </div>
         </div>
-    );
-
-    const InfoModal = ({ title, message, onClose }) => {
-        return (
-            <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
-                <div className="relative p-6 bg-white rounded-lg shadow-xl max-w-sm mx-auto text-center transform transition-all sm:my-8 sm:align-middle sm:max-w-lg">
-                    <h3 className="text-xl leading-6 font-bold text-gray-900 mb-4">{title}</h3>
-                    <div className="mt-2">
-                        <p className="text-sm text-gray-500 break-all">{message}</p>
-                    </div>
-                    <div className="mt-5 sm:mt-6">
-                        <button
-                            onClick={onClose}
-                            type="button"
-                            className="inline-flex justify-center w-full rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm"
-                        >
-                            OK
-                        </button>
-                    </div>
-                </div>
+        <div className="mt-6 w-full bg-gray-200 rounded-full h-2.5">
+          <div
+            id="budgetProgressBar"
+            className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500 ease-in-out"
+            style={{ width: "0%" }}
+          />
+        </div>
+        <p
+          id="budgetProgressText"
+          className="text-sm text-center text-gray-500 mt-2"
+        >
+          0% do orçamento usado
+        </p>
+        <div className="mt-8 pt-4 border-t border-gray-200">
+          <p className="text-center font-semibold text-gray-700 mb-2">
+            Linha do Tempo da Obra
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-center">
+            <div>
+              <p className="text-gray-500 text-sm">Início</p>
+              <p
+                id="startDateDisplay"
+                className="text-md font-semibold text-gray-800 mt-1"
+              >
+                Não definido
+              </p>
             </div>
-        );
-    };
-
-    const ExpenseModal = ({ onClose }) => {
-        const handleValueChange = (e) => {
-            const { name, value } = e.target;
-            setExpenseData(prev => {
-                const updatedData = { ...prev, [name]: value };
-                if (name === 'quantity' || name === 'unitPrice') {
-                    const quantity = parseFloat(updatedData.quantity) || 0;
-                    const unitPrice = parseFloat(updatedData.unitPrice) || 0;
-                    updatedData.totalValue = (quantity * unitPrice).toFixed(2);
-                }
-                return updatedData;
-            });
-        };
-
-        return (
-            <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
-                <div className="relative bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-auto transform transition-all">
-                    <div className="flex justify-between items-center pb-3 border-b border-gray-200 mb-4">
-                        <h3 className="text-xl font-bold text-gray-900">Registrar Despesa</h3>
-                        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-                            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                        </button>
-                    </div>
-                    <div className="space-y-4">
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Data</label>
-                            <input
-                                type="date"
-                                name="date"
-                                value={expenseData.date}
-                                onChange={handleValueChange}
-                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                            />
-                        </div>
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Categoria</label>
-                            <select
-                                name="category"
-                                value={expenseData.category}
-                                onChange={handleValueChange}
-                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                                <option value="Material">Material</option>
-                                <option value="Mão de Obra">Mão de Obra</option>
-                                <option value="Outros">Outros</option>
-                            </select>
-                        </div>
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Descrição</label>
-                            <input
-                                type="text"
-                                name="description"
-                                value={expenseData.description}
-                                onChange={handleValueChange}
-                                placeholder="Ex: Saco de Cimento"
-                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                            />
-                        </div>
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Unidade de Medida</label>
-                            <select
-                                name="unit"
-                                value={expenseData.unit}
-                                onChange={handleValueChange}
-                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                                <option value="Unidade">Unidade</option>
-                                <option value="Metro">Metro</option>
-                                <option value="Quilograma">Quilograma</option>
-                                <option value="Caixa">Caixa</option>
-                            </select>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                            <div className="flex flex-col">
-                                <label className="text-sm font-medium text-gray-700 mb-1">Quantidade</label>
-                                <input
-                                    type="number"
-                                    name="quantity"
-                                    value={expenseData.quantity}
-                                    onChange={handleValueChange}
-                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                />
-                            </div>
-                            <div className="flex flex-col">
-                                <label className="text-sm font-medium text-gray-700 mb-1">Preço Unitário (R$)</label>
-                                <input
-                                    type="number"
-                                    name="unitPrice"
-                                    value={expenseData.unitPrice}
-                                    onChange={handleValueChange}
-                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                />
-                            </div>
-                        </div>
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Valor Total (R$)</label>
-                            <input
-                                type="text"
-                                name="totalValue"
-                                value={expenseData.totalValue}
-                                readOnly
-                                className="w-full px-4 py-2 rounded-lg bg-gray-100 border border-gray-300"
-                            />
-                        </div>
-                        <div className="flex flex-col">
-                            <label className="text-sm font-medium text-gray-700 mb-1">Forma de Pagamento</label>
-                            <select
-                                name="paymentMethod"
-                                value={expenseData.paymentMethod}
-                                onChange={handleValueChange}
-                                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                            >
-                                <option value="Cartão de Crédito">Cartão de Crédito</option>
-                                <option value="Cartão de Débito">Cartão de Débito</option>
-                                <option value="Dinheiro">Dinheiro</option>
-                                <option value="PIX">PIX</option>
-                                <option value="Transferência Bancária">Transferência Bancária</option>
-                            </select>
-                        </div>
-                    </div>
-                    <div className="mt-6 flex justify-end space-x-2">
-                        <button
-                            onClick={onClose}
-                            className="bg-gray-200 text-gray-800 font-medium py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors"
-                        >
-                            Cancelar
-                        </button>
-                        <button
-                            onClick={addExpense}
-                            className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
-                        >
-                            Registrar Despesa
-                        </button>
-                    </div>
-                </div>
+            <div>
+              <p className="text-gray-500 text-sm">Duração</p>
+              <p
+                id="durationDisplay"
+                className="text-md font-semibold text-gray-800 mt-1"
+              >
+                0 meses, 0 dias
+              </p>
             </div>
-        );
-    };
-
-    // --- Main Render Logic ---
-    const renderContent = () => {
-        if (loading) {
-            return (
-                <div className="flex items-center justify-center h-screen bg-gray-100">
-                    <div className="flex flex-col items-center">
-                        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
-                        <p className="text-gray-600 font-medium">Carregando...</p>
-                    </div>
-                </div>
-            );
-        }
-
-        if (!user) {
-            return <AuthScreen />;
-        }
-
-        return (
-            <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 sm:p-8">
-                <div className="w-full max-w-6xl bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col">
-                    
-                    {/* Header with Project Selection and Add Button */}
-                    <header className="bg-white p-4 sm:p-6 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
-                        <div className="flex items-center space-x-2 w-full sm:w-auto">
-                            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex-shrink-0">
-                                Gestão de Obra
-                            </h1>
-                            {projects.length > 0 && (
-                                <div className="flex-grow sm:flex-grow-0">
-                                    <select
-                                        value={currentProject ? currentProject.id : ''}
-                                        onChange={(e) => {
-                                            const selectedProject = projects.find(p => p.id === e.target.value);
-                                            setCurrentProject(selectedProject);
-                                        }}
-                                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
-                                    >
-                                        {projects.map(project => (
-                                            <option key={project.id} value={project.id}>{project.name}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                            )}
-                        </div>
-                        <div className="flex items-center space-x-2">
-                            {currentProject && (
-                                <button
-                                    onClick={() => deleteProject(currentProject.id)}
-                                    className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-red-600 transition-colors"
-                                >
-                                    Excluir Projeto
-                                </button>
-                            )}
-                            <button
-                                onClick={addProject}
-                                className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-blue-700 transition-colors"
-                            >
-                                Adicionar Novo Projeto
-                            </button>
-                            <button
-                                onClick={handleLogout}
-                                className="bg-gray-500 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-gray-600 transition-colors"
-                            >
-                                Sair
-                            </button>
-                        </div>
-                    </header>
-
-                    {/* Check if there is a project to display content */}
-                    {!currentProject ? (
-                        <div className="flex-grow flex items-center justify-center p-8">
-                            <p className="text-gray-500 text-lg">
-                                Crie um novo projeto para começar a gerenciar suas despesas e orçamentos.
-                            </p>
-                        </div>
-                    ) : (
-                        <div className="flex flex-col flex-grow">
-                            {/* Tab Navigation */}
-                            <nav className="bg-gray-50 border-b border-gray-200">
-                                <div className="flex justify-center sm:justify-start -mb-px">
-                                    <button
-                                        onClick={() => setActiveTab('dashboard')}
-                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'dashboard' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                                    >
-                                        Painel de Controle
-                                    </button>
-                                    <button
-                                        onClick={() => setActiveTab('budget')}
-                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'budget' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                                    >
-                                        Orçamento
-                                    </button>
-                                    <button
-                                        onClick={() => setActiveTab('expenses')}
-                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'expenses' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                                    >
-                                        Despesas
-                                    </button>
-                                </div>
-                            </nav>
-        
-                            {/* Main Content based on active tab */}
-                            <div className="p-4 sm:p-8 flex-grow overflow-y-auto">
-                                {activeTab === 'dashboard' && (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
-                                            <h2 className="text-lg sm:text-xl font-semibold mb-2 text-gray-800">Resumo Financeiro</h2>
-                                            <p className="text-sm sm:text-base text-gray-600">Orçamento Total: <span className="font-bold text-green-600">R$ {totalBudget.toFixed(2)}</span></p>
-                                            <p className="text-sm sm:text-base text-gray-600">Total de Despesas: <span className="font-bold text-red-600">R$ {totalExpenses.toFixed(2)}</span></p>
-                                            <p className="text-sm sm:text-base text-gray-600">
-                                                Orçamento Restante: 
-                                                <span className={`font-bold ${remainingBudget >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                    R$ {remainingBudget.toFixed(2)}
-                                                </span>
-                                            </p>
-                                        </div>
-        
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
-                                            <div className="w-full max-w-xs">
-                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas por Categoria</h2>
-                                                {expenses.length > 0 ? (
-                                                    <Doughnut data={getDoughnutData()} />
-                                                ) : (
-                                                    <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
-                                                )}
-                                            </div>
-                                        </div>
-        
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
-                                            <div className="w-full">
-                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Orçamento por Item</h2>
-                                                {budgets.length > 0 ? (
-                                                    <Bar 
-                                                        data={getBudgetAllocationData()}
-                                                        options={{ responsive: true, maintainAspectRatio: true }}
-                                                    />
-                                                ) : (
-                                                    <p className="text-center text-sm text-gray-500">Nenhum item de orçamento para exibir.</p>
-                                                )}
-                                            </div>
-                                        </div>
-        
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 col-span-1 md:col-span-2 lg:col-span-3">
-                                            <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas ao Longo do Tempo</h2>
-                                            {expenses.length > 0 ? (
-                                                <Bar
-                                                    data={getMonthlyExpensesData()}
-                                                    options={{ responsive: true, maintainAspectRatio: true }}
-                                                />
-                                            ) : (
-                                                <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-        
-                                {activeTab === 'budget' && (
-                                    <div className="space-y-8">
-                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
-                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Item ao Orçamento</h2>
-                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                                <input
-                                                    type="text"
-                                                    value={budgetItem}
-                                                    onChange={(e) => setBudgetItem(e.target.value)}
-                                                    placeholder="Item (Ex: Telhado)"
-                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                                />
-                                                <input
-                                                    type="number"
-                                                    value={budgetAmount}
-                                                    onChange={(e) => setBudgetAmount(e.target.value)}
-                                                    placeholder="Valor (R$)"
-                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                                />
-                                                <button onClick={addBudgetItem} className="w-full bg-green-500 text-white font-medium py-2 rounded-lg shadow-md hover:bg-green-600 transition-colors">
-                                                    Adicionar
-                                                </button>
-                                            </div>
-                                        </div>
-        
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
-                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Itens do Orçamento</h2>
-                                            <div className="overflow-x-auto">
-                                                <table className="min-w-full divide-y divide-gray-200">
-                                                    <thead>
-                                                        <tr className="bg-gray-50">
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Item
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Valor (R$)
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Ações
-                                                            </th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="bg-white divide-y divide-gray-200">
-                                                        {budgets.length > 0 ? (
-                                                            budgets.map(budget => (
-                                                                <tr key={budget.id}>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{budget.item}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{budget.amount.toFixed(2)}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                                        <button onClick={() => deleteBudgetItem(budget.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
-                                                                    </td>
-                                                                </tr>
-                                                            ))
-                                                        ) : (
-                                                            <tr>
-                                                                <td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Nenhum item de orçamento registrado ainda.</td>
-                                                            </tr>
-                                                        )}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-        
-                                {activeTab === 'expenses' && (
-                                    <div className="space-y-8">
-                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
-                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Nova Despesa</h2>
-                                            <button 
-                                                onClick={() => setShowExpenseModal(true)}
-                                                className="w-full bg-blue-600 text-white font-medium py-3 rounded-lg shadow-md hover:bg-blue-700 transition-colors"
-                                            >
-                                                Registrar Nova Despesa
-                                            </button>
-                                        </div>
-        
-                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
-                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Registro de Despesas</h2>
-                                            <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 mb-4">
-                                                <div className="flex-grow">
-                                                    <input
-                                                        type="text"
-                                                        value={searchTerm}
-                                                        onChange={(e) => setSearchTerm(e.target.value)}
-                                                        placeholder="Buscar por descrição..."
-                                                        className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                                    />
-                                                </div>
-                                                <select
-                                                    value={selectedFilter}
-                                                    onChange={(e) => setSelectedFilter(e.target.value)}
-                                                    className="w-full sm:w-auto px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
-                                                >
-                                                    <option value="all">Todas as Despesas</option>
-                                                    <option value="Material">Material</option>
-                                                    <option value="Mão de Obra">Mão de Obra</option>
-                                                    <option value="Outros">Outros</option>
-                                                </select>
-                                            </div>
-                                            <div className="overflow-x-auto">
-                                                <table className="min-w-full divide-y divide-gray-200">
-                                                    <thead>
-                                                        <tr className="bg-gray-50">
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Data
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Descrição
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Tipo
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Valor (R$)
-                                                            </th>
-                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                                Ações
-                                                            </th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="bg-white divide-y divide-gray-200">
-                                                        {filterAndSearchExpenses().length > 0 ? (
-                                                            filterAndSearchExpenses().map(expense => (
-                                                                <tr key={expense.id}>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{format(parseISO(expense.date), 'dd/MM/yyyy')}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{expense.description}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.category}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.totalValue.toFixed(2)}</td>
-                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                                                        <button onClick={() => deleteExpense(expense.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
-                                                                    </td>
-                                                                </tr>
-                                                            ))
-                                                        ) : (
-                                                            <tr>
-                                                                <td colSpan="5" className="px-6 py-4 text-center text-sm text-gray-500">
-                                                                    {expenses.length === 0 ? 'Nenhuma despesa registrada ainda.' : 'Nenhum resultado encontrado.'}
-                                                                </td>
-                                                            </tr>
-                                                        )}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    )}
-                    
-                    <footer className="mt-auto pt-4 pb-2 border-t border-gray-200 text-center bg-gray-50">
-                        <p className="text-gray-500 text-xs">
-                            ID do Usuário: <span className="font-mono break-all">{userId}</span>
-                        </p>
-                    </footer>
-                </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <section className="mb-8">
+      <h2 className="text-3xl font-bold text-gray-800 mb-4">
+        Relatórios e Resumo
+      </h2>
+      <div className="card p-6">
+        <h3 className="text-xl font-semibold mb-4 text-gray-700">
+          Custos por Categoria
+        </h3>
+        <div className="mb-4 flex justify-center">
+          <div className="w-[300px] h-[300px]">
+            <canvas id="categoryChart" />
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
+          <button id="exportCsvBtn" className="btn-secondary py-2 px-4 flex-1">
+            Exportar para CSV
+          </button>
+          <button id="exportPdfBtn" className="btn-secondary py-2 px-4 flex-1">
+            Gerar Relatório em PDF
+          </button>
+        </div>
+      </div>
+    </section>
+    <section className="mb-8">
+      <h2 className="text-3xl font-bold text-gray-800 mb-4">Backup de Dados</h2>
+      <div className="card p-6">
+        <p className="text-gray-600 mb-4">
+          Salve seus dados em um arquivo local ou restaure-os de um backup.
+        </p>
+        <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-4">
+          <button id="exportJsonBtn" className="btn-secondary py-2 px-4 flex-1">
+            Salvar Backup (JSON)
+          </button>
+          <label
+            htmlFor="importJsonFile"
+            className="btn-secondary py-2 px-4 flex-1 text-center cursor-pointer"
+          >
+            Restaurar Backup (JSON)
+          </label>
+          <input
+            type="file"
+            id="importJsonFile"
+            className="hidden"
+            accept=".json"
+          />
+        </div>
+      </div>
+    </section>
+    <section className="mb-8">
+      <h2 className="text-3xl font-bold text-gray-800 mb-4">
+        Últimas Despesas
+      </h2>
+      <div className="flex flex-col md:flex-row gap-4 mb-4">
+        <div className="relative w-full md:w-2/5">
+          <input
+            type="text"
+            id="searchFilter"
+            placeholder="Buscar por descrição..."
+            className="w-full pl-10"
+          />
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth="1.5"
+              stroke="currentColor"
+              className="w-5 h-5 text-gray-400"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"
+              />
+            </svg>
+          </div>
+        </div>
+        <select id="categoryFilter" className="w-full md:w-1/5">
+          <option value="all">Categoria (Todos)</option>
+          <option value="material">Materiais</option>
+          <option value="mao-de-obra">Mão de Obra</option>
+          <option value="equipamento">Equipamentos</option>
+          <option value="servico">Serviços</option>
+          <option value="outros">Outros</option>
+        </select>
+        <select id="monthFilter" className="w-full md:w-1/5">
+          <option value="all">Mês (Todos)</option>
+        </select>
+        <select id="yearFilter" className="w-full md:w-1/5">
+          <option value="all">Ano (Todos)</option>
+        </select>
+      </div>
+      <div id="expenseListContainer" className="card p-4">
+        <table className="w-full">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Descrição</th>
+              <th>Tipo</th>
+              <th>Valor</th>
+              <th className="text-right">Ações</th>
+            </tr>
+          </thead>
+          <tbody id="expenseTableBody"></tbody>
+        </table>
+        <p
+          id="noExpensesMessage"
+          className="text-center text-gray-500 mt-4 hidden"
+        >
+          Nenhuma despesa registrada ainda.
+        </p>
+        <p
+          id="noResultsMessage"
+          className="text-center text-gray-500 mt-4 hidden"
+        >
+          Nenhum resultado encontrado.
+        </p>
+      </div>
+    </section>
+  </div>
+  <div
+    id="expenseModal"
+    className="modal fixed inset-0 z-50 flex items-center justify-center p-4 hidden"
+  >
+    <div className="modal-content w-full max-w-lg overflow-y-auto max-h-[90vh]">
+      <div className="flex justify-between items-center mb-6">
+        <h2 id="expenseModalTitle" className="text-2xl font-bold text-gray-800">
+          Registrar Despesa
+        </h2>
+        <button
+          id="closeModalBtn"
+          className="text-gray-500 hover:text-gray-700"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-6 w-6"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M6 18L18 6M6 6l12 12"
+            />
+          </svg>
+        </button>
+      </div>
+      <form id="expenseForm" className="space-y-4">
+        <div>
+          <label
+            htmlFor="expenseDate"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Data
+          </label>
+          <input type="date" id="expenseDate" name="expenseDate" required="" />
+        </div>
+        <div>
+          <label
+            htmlFor="expenseCategory"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Categoria
+          </label>
+          <select id="expenseCategory" name="expenseCategory" required="">
+            <option value="">Selecione a categoria</option>
+            <option value="material">Material</option>
+            <option value="mao-de-obra">Mão de Obra</option>
+            <option value="equipamento">Equipamento</option>
+            <option value="servico">Serviço</option>
+            <option value="outros">Outros</option>
+          </select>
+        </div>
+        <div id="dynamicFields" className="space-y-4">
+          <div id="materialFields" className="hidden space-y-4">
+            <div>
+              <label
+                htmlFor="materialName"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Descrição do Material
+              </label>
+              <input
+                type="text"
+                id="materialName"
+                name="materialName"
+                placeholder="Ex: Saco de Cimento"
+              />
             </div>
-        );
-    };
-
-    return (
-        <>
-            {renderContent()}
-            {showInfoModal && (
-                <InfoModal
-                    title={infoModalContent.title}
-                    message={infoModalContent.message}
-                    onClose={() => setShowInfoModal(false)}
+            <div>
+              <label
+                htmlFor="materialUnit"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Unidade de Medida
+              </label>
+              <select id="materialUnit" name="materialUnit">
+                <option value="">Selecione a unidade</option>
+                <option value="metro">Metro (m)</option>
+                <option value="m2">Metro Quadrado (m²)</option>
+                <option value="m3">Metro Cúbico (m³)</option>
+                <option value="saco-50kg">Saco 50kg</option>
+                <option value="saco-20kg">Saco 20Kg</option>
+                <option value="lata-18l">Lata 18 litros</option>
+                <option value="lata-3.6l">Lata 3,6 litros</option>
+                <option value="lata-900ml">Lata 900ml</option>
+                <option value="caminhao">Caminhão</option>
+                <option value="milheiro">Milheiro</option>
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="materialQuantity"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Quantidade
+              </label>
+              <input
+                type="number"
+                id="materialQuantity"
+                name="materialQuantity"
+                step="0.01"
+                min={0}
+                placeholder={0.0}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="materialPrice"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Preço Unitário (R$)
+              </label>
+              <input
+                type="number"
+                id="materialPrice"
+                name="materialPrice"
+                step="0.01"
+                min={0}
+                placeholder={0.0}
+              />
+            </div>
+          </div>
+          <div id="manpowerFields" className="hidden space-y-4">
+            <div>
+              <label
+                htmlFor="manpowerName"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Nome do Profissional
+              </label>
+              <input
+                type="text"
+                id="manpowerName"
+                name="manpowerName"
+                placeholder="Ex: Pedreiro João"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label
+                  htmlFor="manpowerDuration"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Duração
+                </label>
+                <input
+                  type="number"
+                  id="manpowerDuration"
+                  name="manpowerDuration"
+                  min={1}
+                  placeholder="Ex: 20"
                 />
-            )}
-            {showExpenseModal && (
-                <ExpenseModal onClose={() => setShowExpenseModal(false)} />
-            )}
-        </>
-    );
-};
-
-export default App;
+              </div>
+              <div>
+                <label
+                  htmlFor="manpowerDurationUnit"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Unidade
+                </label>
+                <select id="manpowerDurationUnit" name="manpowerDurationUnit">
+                  <option value="dias">Dias</option>
+                  <option value="meses">Meses</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="equipmentFields" className="hidden space-y-4">
+            <div>
+              <label
+                htmlFor="equipmentSelect"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Selecione o Equipamento
+              </label>
+              <select id="equipmentSelect" name="equipmentSelect">
+                <option value="">Selecione o equipamento</option>
+                <option value="andaime">Andaime</option>
+                <option value="betoneira">Betoneira</option>
+                <option value="furadeira">Furadeira</option>
+                <option value="britadeira">Britadeira</option>
+                <option value="outros">Outros</option>
+              </select>
+            </div>
+            <div id="otherEquipmentDiv" className="hidden">
+              <label
+                htmlFor="otherEquipmentName"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Nome do Outro Equipamento
+              </label>
+              <input
+                type="text"
+                id="otherEquipmentName"
+                name="otherEquipmentName"
+                placeholder="Digite o nome do equipamento"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label
+                  htmlFor="equipmentDuration"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Duração
+                </label>
+                <input
+                  type="number"
+                  id="equipmentDuration"
+                  name="equipmentDuration"
+                  min={1}
+                  placeholder="Ex: 30"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="equipmentDurationUnit"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Unidade
+                </label>
+                <select id="equipmentDurationUnit" name="equipmentDurationUnit">
+                  <option value="dias">Dias</option>
+                  <option value="meses">Meses</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="otherServicesFields" className="hidden space-y-4">
+            <div>
+              <label
+                htmlFor="otherDescription"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Descrição
+              </label>
+              <input
+                type="text"
+                id="otherDescription"
+                name="otherDescription"
+                placeholder="Descreva o gasto"
+              />
+            </div>
+          </div>
+        </div>
+        <div>
+          <label
+            htmlFor="expenseValue"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Valor Total (R$)
+          </label>
+          <input
+            type="number"
+            id="expenseValue"
+            name="expenseValue"
+            step="0.01"
+            min={0}
+            required=""
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="expensePaymentMethod"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Forma de Pagamento
+          </label>
+          <select
+            id="expensePaymentMethod"
+            name="expensePaymentMethod"
+            required=""
+          >
+            <option value="">Selecione a forma de pagamento</option>
+            <option value="dinheiro">Dinheiro</option>
+            <option value="pix">PIX</option>
+            <option value="cartao">Cartão</option>
+            <option value="transferencia">Transferência</option>
+          </select>
+        </div>
+        <div className="pt-4">
+          <button
+            type="submit"
+            id="submitExpenseBtn"
+            className="btn-primary w-full py-3 text-lg font-semibold"
+          >
+            Registrar Gasto
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div
+    id="budgetModal"
+    className="modal fixed inset-0 z-50 flex items-center justify-center p-4 hidden"
+  >
+    <div className="modal-content w-full max-w-sm text-center">
+      <h2 className="text-2xl font-bold text-gray-800 mb-4">
+        Definir Orçamento e Início
+      </h2>
+      <form id="budgetForm" className="space-y-4">
+        <div>
+          <label
+            htmlFor="budgetValue"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Valor do Orçamento (R$)
+          </label>
+          <input
+            type="number"
+            id="budgetValue"
+            name="budgetValue"
+            step="0.01"
+            min={0}
+            placeholder="Ex: 50000.00"
+            required=""
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="startDate"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Data de Início da Obra
+          </label>
+          <input type="date" id="startDate" name="startDate" />
+        </div>
+        <div className="pt-4">
+          <button
+            type="submit"
+            className="btn-primary w-full py-3 text-lg font-semibold"
+          >
+            Salvar Orçamento
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</>
