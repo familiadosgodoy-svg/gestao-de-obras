@@ -1,500 +1,732 @@
-// Este arquivo contém o código da aplicação JavaScript (antigo JSX).
-// Ele foi modificado para ser um arquivo .js padrão e ser compatível com servidores web simples.
+// Importações de bibliotecas e hooks do React
+import { useState, useEffect } from 'react';
+// Importações do Firebase SDK
+import { initializeApp } from 'firebase/app';
+import { 
+    getAuth, 
+    signInWithCustomToken, 
+    onAuthStateChanged, 
+    signInAnonymously,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut
+} from 'firebase/auth';
+import { 
+    getFirestore, 
+    doc, 
+    setDoc, 
+    onSnapshot, 
+    collection, 
+    query, 
+    addDoc, 
+    deleteDoc,
+    getDocs,
+    where
+} from 'firebase/firestore';
 
-// Variáveis globais para o IndexedDB
-let db;
-const DB_NAME = 'gestaoObraDB';
-const DB_VERSION = 1;
-const EXPENSES_STORE = 'expenses';
-const BUDGET_STORE = 'budget';
-let isDbReady = false;
+// Importações de componentes Chart.js e React-Chartjs-2
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import { Doughnut } from 'react-chartjs-2';
+// Importa o `html2canvas` para capturar a tela para o PDF
+import html2canvas from 'html2canvas';
+// Importa `jsPDF` e `jspdf-autotable` para a geração de PDF
+import jsPDF from 'jspdf';
+import 'jspdf-autotable';
 
-// Variáveis globais para o modal de mensagem
-const messageModal = document.getElementById('messageModal');
-const modalMessage = document.getElementById('modalMessage');
-const modalTitle = document.getElementById('modalTitle');
-const closeModalBtn = document.getElementById('closeModalBtn');
+// Registra os componentes necessários do Chart.js
+ChartJS.register(ArcElement, Tooltip, Legend);
 
-// Variáveis para o overlay de carregamento
-const loadingOverlay = document.getElementById('loadingOverlay');
-const loadingMessage = document.getElementById('loadingMessage');
-const mainContainer = document.getElementById('mainContainer');
-
-// Gráfico
-let budgetChart;
-
-// Referências aos elementos do DOM
-const newExpenseBtn = document.getElementById('new-expense-btn');
-const newExpenseModal = document.getElementById('new-expense-modal');
-const closeExpenseModal = document.getElementById('close-expense-modal');
-const expenseForm = document.getElementById('expense-form');
-const totalExpensesEl = document.getElementById('total-expenses');
-const remainingBudgetEl = document.getElementById('remaining-budget');
-const expenseList = document.getElementById('expense-list');
-const categoryFilter = document.getElementById('category-filter');
-const exportPdfBtn = document.getElementById('export-pdf-btn');
-const totalBudgetEl = document.getElementById('total-budget');
-const totalExpensesTextEl = document.getElementById('total-expenses-text');
-const remainingBudgetTextEl = document.getElementById('remaining-budget-text');
-const budgetTimelineEl = document.getElementById('budget-timeline');
-const addBudgetBtn = document.getElementById('add-budget-btn');
-const budgetModal = document.getElementById('budget-modal');
-const closeBudgetModal = document.getElementById('close-budget-modal');
-const budgetForm = document.getElementById('budget-form');
-const budgetAmountInput = document.getElementById('budget-amount');
-const budgetStartDateInput = document.getElementById('budget-start-date');
-const budgetEndDateInput = document.getElementById('budget-end-date');
-const budgetStatus = document.getElementById('budget-status');
-
-// --- Funções do IndexedDB ---
-function openDb() {
-    return new Promise((resolve, reject) => {
-        if (isDbReady) {
-            resolve(db);
-            return;
-        }
-        showLoading("Abrindo banco de dados...");
-        const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains(EXPENSES_STORE)) {
-                db.createObjectStore(EXPENSES_STORE, { keyPath: 'id', autoIncrement: true });
-            }
-            if (!db.objectStoreNames.contains(BUDGET_STORE)) {
-                db.createObjectStore(BUDGET_STORE, { keyPath: 'id', autoIncrement: true });
-            }
-        };
-
-        request.onsuccess = (event) => {
-            db = event.target.result;
-            isDbReady = true;
-            console.log("Banco de dados aberto com sucesso.");
-            hideLoading();
-            resolve(db);
-        };
-
-        request.onerror = (event) => {
-            const error = event.target.error;
-            console.error("Erro ao abrir o banco de dados:", error);
-            hideLoading();
-            reject(error);
-        };
-    });
-}
-
-function addData(storeName, data) {
-    return new Promise((resolve, reject) => {
-        showLoading("Salvando dados...");
-        const transaction = db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.add(data);
-
-        request.onsuccess = () => {
-            hideLoading();
-            resolve(request.result);
-        };
-
-        request.onerror = (event) => {
-            hideLoading();
-            reject(event.target.error);
-        };
-    });
-}
-
-function updateData(storeName, data) {
-    return new Promise((resolve, reject) => {
-        showLoading("Atualizando dados...");
-        const transaction = db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.put(data);
-
-        request.onsuccess = () => {
-            hideLoading();
-            resolve(request.result);
-        };
-
-        request.onerror = (event) => {
-            hideLoading();
-            reject(event.target.error);
-        };
-    });
-}
-
-function getData(storeName) {
-    return new Promise((resolve, reject) => {
-        showLoading("Buscando dados...");
-        const transaction = db.transaction([storeName], 'readonly');
-        const store = transaction.objectStore(storeName);
-        const request = store.getAll();
-
-        request.onsuccess = () => {
-            hideLoading();
-            resolve(request.result);
-        };
-
-        request.onerror = (event) => {
-            hideLoading();
-            reject(event.target.error);
-        };
-    });
-}
-
-function deleteData(storeName, id) {
-    return new Promise((resolve, reject) => {
-        showLoading("Excluindo dados...");
-        const transaction = db.transaction([storeName], 'readwrite');
-        const store = transaction.objectStore(storeName);
-        const request = store.delete(id);
-
-        request.onsuccess = () => {
-            hideLoading();
-            resolve();
-        };
-
-        request.onerror = (event) => {
-            hideLoading();
-            reject(event.target.error);
-        };
-    });
-}
-
-// --- Funções de Manipulação de Dados e UI ---
-let allExpenses = [];
-let currentBudget = null;
-
-async function loadExpenses() {
-    try {
-        allExpenses = await getData(EXPENSES_STORE);
-        console.log("Despesas carregadas:", allExpenses);
-    } catch (error) {
-        console.error("Erro ao carregar despesas:", error);
-        showMessageModal("Erro", "Não foi possível carregar as despesas. Tente novamente.");
-    }
-}
-
-async function loadBudget() {
-    try {
-        const budgets = await getData(BUDGET_STORE);
-        currentBudget = budgets.length > 0 ? budgets[0] : null;
-        console.log("Orçamento carregado:", currentBudget);
-        renderBudget();
-    } catch (error) {
-        console.error("Erro ao carregar orçamento:", error);
-        showMessageModal("Erro", "Não foi possível carregar o orçamento. Tente novamente.");
-    }
-}
-
-function renderExpenses(expenses) {
-    expenseList.innerHTML = '';
-    expenses.forEach(expense => {
-        const li = document.createElement('li');
-        li.className = 'flex items-center justify-between p-4 bg-gray-50 rounded-lg shadow-sm mb-2';
-        li.innerHTML = `
-            <div class="flex-1">
-                <span class="font-semibold text-gray-800">${expense.description}</span>
-                <span class="block text-sm text-gray-500">${new Date(expense.date).toLocaleDateString()}</span>
-                <span class="block text-xs font-medium text-gray-600 rounded-full px-2 py-1 mt-1 bg-gray-200 inline-block">${expense.category}</span>
+// Componente para um Modal de Mensagem
+const InfoModal = ({ title, message, onClose }) => {
+    return (
+        <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-50">
+            <div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
+                <h4 className="text-lg font-bold mb-2">{title}</h4>
+                <p className="text-gray-700 mb-4">{message}</p>
+                <button onClick={onClose} className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition">OK</button>
             </div>
-            <div class="flex items-center space-x-2">
-                <span class="text-lg font-bold text-red-600">R$ ${parseFloat(expense.amount).toFixed(2)}</span>
-                <button onclick="editExpense(${expense.id})" class="text-blue-500 hover:text-blue-700 p-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zm-5.042 5.042l-2.828 2.828-.793-.793 2.828-2.828.793.793zm-.793.793l-.793.793 4.243 4.243 2.828-2.828-4.243-4.243z" />
-                    </svg>
-                </button>
-                <button onclick="deleteExpense(${expense.id})" class="text-red-500 hover:text-red-700 p-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-                    </svg>
-                </button>
+        </div>
+    );
+};
+
+// Componente para um Modal de Confirmação
+const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
+    return (
+        <div className="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 z-50">
+            <div className="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
+                <h4 className="text-lg font-bold mb-2">Confirmação</h4>
+                <p className="text-gray-700 mb-4">{message}</p>
+                <div className="flex justify-center space-x-4">
+                    <button onClick={onConfirm} className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition">Excluir</button>
+                    <button onClick={onCancel} className="bg-gray-300 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-400 transition">Cancelar</button>
+                </div>
             </div>
-        `;
-        expenseList.appendChild(li);
-    });
-}
+        </div>
+    );
+};
 
-function updateSummary() {
-    const totalExpenses = allExpenses.reduce((sum, expense) => sum + parseFloat(expense.amount), 0);
-    totalExpensesEl.textContent = `R$ ${totalExpenses.toFixed(2)}`;
+// Componente Principal da Aplicação
+const App = () => {
+    // --- State: Autenticação e Projeto ---
+    const [user, setUser] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [currentPage, setCurrentPage] = useState('login'); // 'login', 'register', 'projects', 'dashboard'
 
-    if (currentBudget) {
-        const remaining = currentBudget.amount - totalExpenses;
-        remainingBudgetEl.textContent = `R$ ${remaining.toFixed(2)}`;
-        remainingBudgetEl.className = `font-bold ${remaining >= 0 ? 'text-green-600' : 'text-red-600'}`;
-        remainingBudgetTextEl.textContent = `Orçamento Restante`;
-        updateBudgetChart(totalExpenses, remaining);
-    } else {
-        remainingBudgetEl.textContent = `R$ 0.00`;
-        remainingBudgetEl.className = 'font-bold text-gray-500';
-        remainingBudgetTextEl.textContent = `(Sem Orçamento)`;
-        updateBudgetChart(totalExpenses, 0);
-    }
-}
+    const [currentProject, setCurrentProject] = useState(null);
+    const [projects, setProjects] = useState([]);
 
-function renderBudget() {
-    if (currentBudget) {
-        totalBudgetEl.textContent = `R$ ${currentBudget.amount.toFixed(2)}`;
-        totalExpensesTextEl.textContent = `Total de Despesas`;
-        budgetStatus.classList.remove('hidden');
-        budgetTimelineEl.textContent = `${new Date(currentBudget.startDate).toLocaleDateString()} - ${new Date(currentBudget.endDate).toLocaleDateString()}`;
-    } else {
-        totalBudgetEl.textContent = 'R$ 0.00';
-        totalExpensesTextEl.textContent = 'Total de Despesas';
-        budgetStatus.classList.add('hidden');
-        budgetTimelineEl.textContent = '';
-    }
-}
+    // --- State: Dados e UI ---
+    const [expenses, setExpenses] = useState([]);
+    const [budget, setBudget] = useState(null);
+    const [showExpenseModal, setShowExpenseModal] = useState(false);
+    const [showBudgetModal, setShowBudgetModal] = useState(false);
+    const [showInfoModal, setShowInfoModal] = useState(false);
+    const [infoModalContent, setInfoModalContent] = useState({ title: '', message: '' });
+    const [showConfirmationModal, setShowConfirmationModal] = useState(false);
+    const [confirmationAction, setConfirmationAction] = useState(() => () => {});
+    const [filter, setFilter] = useState('all');
 
-function updateBudgetChart(totalExpenses, remaining) {
-    if (budgetChart) {
-        budgetChart.destroy();
-    }
-
-    const ctx = document.getElementById('budget-chart').getContext('2d');
-    budgetChart = new Chart(ctx, {
-        type: 'pie',
-        data: {
-            labels: ['Despesas', 'Restante'],
-            datasets: [{
-                data: [totalExpenses, Math.max(0, remaining)],
-                backgroundColor: ['#ef4444', '#10b981'],
-                hoverOffset: 4
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'bottom',
-                    labels: {
-                        font: {
-                            family: 'Inter',
-                            size: 14
-                        }
-                    }
-                }
-            }
-        }
-    });
-}
-
-function filterAndRenderExpenses() {
-    const selectedCategory = categoryFilter.value;
-    const filteredExpenses = selectedCategory === 'all'
-        ? allExpenses
-        : allExpenses.filter(expense => expense.category === selectedCategory);
-    renderExpenses(filteredExpenses);
-}
-
-// --- Funções de Evento e Lógica de UI ---
-function showMessageModal(title, message) {
-    modalTitle.textContent = title;
-    modalMessage.textContent = message;
-    messageModal.classList.remove('hidden');
-}
-
-function hideMessageModal() {
-    messageModal.classList.add('hidden');
-}
-
-function showLoading(message) {
-    loadingMessage.textContent = message;
-    loadingOverlay.classList.remove('hidden');
-}
-
-function hideLoading() {
-    loadingOverlay.classList.add('hidden');
-}
-
-async function addExpense(event) {
-    event.preventDefault();
-    const newExpense = {
-        description: document.getElementById('expense-description').value,
-        amount: parseFloat(document.getElementById('expense-amount').value),
-        category: document.getElementById('expense-category').value,
-        date: document.getElementById('expense-date').value
-    };
-
-    if (isNaN(newExpense.amount) || newExpense.amount <= 0) {
-        showMessageModal("Erro de Entrada", "Por favor, insira um valor de despesa válido.");
-        return;
-    }
-
-    try {
-        await addData(EXPENSES_STORE, newExpense);
-        await loadExpenses();
-        filterAndRenderExpenses();
-        updateSummary();
-        newExpenseModal.classList.add('hidden');
-        expenseForm.reset();
-    } catch (error) {
-        showMessageModal("Erro ao Adicionar", "Ocorreu um erro ao adicionar a despesa.");
-        console.error("Erro ao adicionar despesa:", error);
-    }
-}
-
-async function deleteExpense(id) {
-    if (!confirm("Tem certeza que deseja excluir esta despesa?")) {
-        return;
-    }
-    try {
-        await deleteData(EXPENSES_STORE, id);
-        await loadExpenses();
-        filterAndRenderExpenses();
-        updateSummary();
-    } catch (error) {
-        showMessageModal("Erro ao Excluir", "Não foi possível excluir a despesa.");
-        console.error("Erro ao excluir despesa:", error);
-    }
-}
-
-async function editExpense(id) {
-    const expenseToEdit = allExpenses.find(e => e.id === id);
-    if (!expenseToEdit) {
-        showMessageModal("Erro", "Despesa não encontrada.");
-        return;
-    }
-    const newDescription = prompt("Editar descrição:", expenseToEdit.description);
-    const newAmount = prompt("Editar valor:", expenseToEdit.amount);
-
-    if (newDescription !== null && newAmount !== null) {
-        const updatedExpense = {
-            ...expenseToEdit,
-            description: newDescription,
-            amount: parseFloat(newAmount)
-        };
+    // --- Efeitos e Inicialização do Firebase ---
+    useEffect(() => {
+        // Inicializa o Firebase e o listener de autenticação
         try {
-            await updateData(EXPENSES_STORE, updatedExpense);
-            await loadExpenses();
-            filterAndRenderExpenses();
-            updateSummary();
+            const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+            const app = initializeApp(firebaseConfig);
+            const authInstance = getAuth(app);
+            const dbInstance = getFirestore(app);
+            setAuth(authInstance);
+            setDb(dbInstance);
+
+            const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+                if (user) {
+                    setUser(user);
+                    setUserId(user.uid);
+                    // Navegar para a tela de projetos após o login
+                    setCurrentPage('projects');
+                } else {
+                    setUser(null);
+                    setUserId(null);
+                    // Navegar para a tela de login se não houver usuário logado
+                    setCurrentPage('login');
+                }
+                setLoading(false);
+            });
+
+            // Clean-up do listener
+            return () => unsubscribe();
         } catch (error) {
-            showMessageModal("Erro ao Atualizar", "Não foi possível atualizar a despesa.");
-            console.error("Erro ao atualizar despesa:", error);
+            console.error("Firebase initialization failed", error);
+            setInfoModalContent({ title: "Erro de Inicialização", message: "Falha ao inicializar o Firebase. Tente recarregar a página." });
+            setShowInfoModal(true);
+            setLoading(false);
         }
-    }
-}
+    }, []);
 
-async function addBudget(event) {
-    event.preventDefault();
-    const newBudget = {
-        amount: parseFloat(budgetAmountInput.value),
-        startDate: budgetStartDateInput.value,
-        endDate: budgetEndDateInput.value
-    };
+    // Efeito para carregar os projetos do usuário
+    useEffect(() => {
+        if (!userId || !db) return;
 
-    if (isNaN(newBudget.amount) || newBudget.amount <= 0) {
-        showMessageModal("Erro de Entrada", "Por favor, insira um valor de orçamento válido.");
-        return;
-    }
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const projectsRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        const projectsQuery = query(projectsRef);
 
-    try {
-        if (currentBudget) {
-            await updateData(BUDGET_STORE, { ...currentBudget, ...newBudget });
-        } else {
-            await addData(BUDGET_STORE, newBudget);
-        }
-        await loadBudget();
-        updateSummary();
-        budgetModal.classList.add('hidden');
-        budgetForm.reset();
-    } catch (error) {
-        showMessageModal("Erro ao Salvar", "Não foi possível salvar o orçamento.");
-        console.error("Erro ao salvar orçamento:", error);
-    }
-}
-
-// --- Funções para Exportação de PDF ---
-async function exportToPdf() {
-    showLoading("Gerando PDF...");
-    try {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-
-        // Título e resumo
-        doc.setFontSize(22);
-        doc.text("Relatório de Gestão de Obra", 14, 20);
-
-        doc.setFontSize(14);
-        doc.text(`Orçamento Total: R$ ${currentBudget ? currentBudget.amount.toFixed(2) : '0.00'}`, 14, 30);
-        doc.text(`Total de Despesas: R$ ${allExpenses.reduce((sum, e) => sum + e.amount, 0).toFixed(2)}`, 14, 38);
-        doc.text(`Orçamento Restante: R$ ${currentBudget ? (currentBudget.amount - allExpenses.reduce((sum, e) => sum + e.amount, 0)).toFixed(2) : '0.00'}`, 14, 46);
-
-        // Tabela de despesas
-        const tableData = allExpenses.map(exp => [
-            new Date(exp.date).toLocaleDateString(),
-            exp.description,
-            exp.category,
-            `R$ ${exp.amount.toFixed(2)}`
-        ]);
-        doc.autoTable({
-            startY: 60,
-            head: [['Data', 'Descrição', 'Categoria', 'Valor']],
-            body: tableData,
-            theme: 'striped',
-            headStyles: { fillColor: '#10b981' }
+        const unsubscribe = onSnapshot(projectsQuery, (snapshot) => {
+            const projectsList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setProjects(projectsList);
+            // Se o usuário estiver na página 'projects' e tiver projetos, mas nenhum estiver selecionado,
+            // podemos navegar para o dashboard do primeiro projeto para um fluxo mais direto.
+            if (currentPage === 'projects' && projectsList.length > 0 && !currentProject) {
+                 setCurrentProject(projectsList[0]);
+                 setCurrentPage('dashboard');
+            }
+        }, (error) => {
+            console.error("Error fetching projects:", error);
+            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar a lista de projetos." });
+            setShowInfoModal(true);
         });
 
-        // Gráfico (como imagem)
-        const canvas = document.getElementById('budget-chart');
-        if (canvas) {
-            const chartDataUrl = canvas.toDataURL('image/png', 1.0);
-            const chartImageWidth = 100;
-            const chartImageHeight = canvas.height * chartImageWidth / canvas.width;
-            const chartX = (doc.internal.pageSize.width - chartImageWidth) / 2;
-            doc.addImage(chartDataUrl, 'PNG', chartX, doc.autoTable.previous.finalY + 10, chartImageWidth, chartImageHeight);
+        return () => unsubscribe();
+    }, [userId, db]);
+
+    // Efeito para carregar despesas e orçamento de um projeto específico
+    useEffect(() => {
+        if (!currentProject || !userId || !db) {
+            setExpenses([]);
+            setBudget(null);
+            return;
         }
 
-        // Salvar o PDF
-        doc.save('relatorio_obra.pdf');
-    } catch (error) {
-        showMessageModal("Erro ao Gerar PDF", "Ocorreu um erro ao gerar o PDF. Detalhes: " + error.message);
-        console.error("Erro ao gerar PDF:", error);
-    } finally {
-        hideLoading();
-    }
-}
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const expensesRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+        const budgetRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budget/current`);
+        
+        // Listener para despesas
+        const unsubscribeExpenses = onSnapshot(expensesRef, (snapshot) => {
+            const expensesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setExpenses(expensesList);
+        }, (error) => {
+            console.error("Error fetching expenses:", error);
+            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar as despesas deste projeto." });
+            setShowInfoModal(true);
+        });
 
+        // Listener para orçamento
+        const unsubscribeBudget = onSnapshot(budgetRef, (doc) => {
+            if (doc.exists()) {
+                setBudget(doc.data());
+            } else {
+                setBudget(null);
+            }
+        }, (error) => {
+            console.error("Error fetching budget:", error);
+            setInfoModalContent({ title: "Erro de Dados", message: "Não foi possível carregar o orçamento deste projeto." });
+            setShowInfoModal(true);
+        });
 
-// --- Event Listeners e Inicialização ---
-document.addEventListener('DOMContentLoaded', () => {
-    // Adiciona o event listener para o formulário de despesas
-    expenseForm.addEventListener('submit', addExpense);
+        return () => {
+            unsubscribeExpenses();
+            unsubscribeBudget();
+        };
+    }, [currentProject, userId, db]);
 
-    // Adiciona o event listener para o formulário de orçamento
-    budgetForm.addEventListener('submit', addBudget);
-
-    // Botoes e modais
-    newExpenseBtn.addEventListener('click', () => newExpenseModal.classList.remove('hidden'));
-    closeExpenseModal.addEventListener('click', () => newExpenseModal.classList.add('hidden'));
-    addBudgetBtn.addEventListener('click', () => budgetModal.classList.remove('hidden'));
-    closeBudgetModal.addEventListener('click', () => budgetModal.classList.add('hidden'));
-    closeModalBtn.addEventListener('click', hideMessageModal);
-
-    // Filtro de categoria
-    categoryFilter.addEventListener('change', filterAndRenderExpenses);
-
-    // Exportar para PDF
-    exportPdfBtn.addEventListener('click', exportToPdf);
-
-    // Inicialização da aplicação
-    async function initApp() {
-        showLoading("Carregando dados...");
+    // --- Funções de Autenticação ---
+    const handleLogin = async (event) => {
+        event.preventDefault();
+        const email = event.target.email.value;
+        const password = event.target.password.value;
+        setLoading(true);
         try {
-            await openDb();
-            await loadExpenses();
-            await loadBudget();
-            filterAndRenderExpenses();
-            updateSummary();
-            mainContainer.classList.remove('hidden');
+            await signInWithEmailAndPassword(auth, email, password);
+            setInfoModalContent({ title: "Sucesso!", message: "Login realizado com sucesso." });
+            setShowInfoModal(true);
         } catch (error) {
-            showMessageModal("Erro de Carregamento", "Ocorreu um erro ao carregar os dados. Tente recarregar a página. Detalhes: " + error.message);
+            console.error("Login failed:", error);
+            setInfoModalContent({ title: "Erro de Login", message: "Credenciais inválidas. Por favor, verifique seu e-mail e senha." });
+            setShowInfoModal(true);
         } finally {
-            hideLoading();
+            setLoading(false);
         }
-    }
+    };
 
-    initApp();
-});
+    const handleRegister = async (event) => {
+        event.preventDefault();
+        const email = event.target.email.value;
+        const password = event.target.password.value;
+        setLoading(true);
+        try {
+            await createUserWithEmailAndPassword(auth, email, password);
+            setInfoModalContent({ title: "Sucesso!", message: "Cadastro realizado com sucesso. Você será logado automaticamente." });
+            setShowInfoModal(true);
+        } catch (error) {
+            console.error("Registration failed:", error);
+            setInfoModalContent({ title: "Erro de Cadastro", message: "Não foi possível criar a conta. A senha deve ter no mínimo 6 caracteres e o e-mail deve ser válido." });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleLogout = async () => {
+        await signOut(auth);
+        setCurrentPage('login'); // Redireciona para a tela de login
+        setCurrentProject(null); // Limpa o projeto atual
+    };
+
+    // --- Funções de Gerenciamento de Projetos ---
+    const handleAddProject = async (event) => {
+        event.preventDefault();
+        const projectName = event.target.projectName.value;
+        if (!projectName || !userId || !db) {
+            setInfoModalContent({ title: "Erro", message: "Nome do projeto ou usuário não encontrado." });
+            setShowInfoModal(true);
+            return;
+        }
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const projectsRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        try {
+            setLoading(true);
+            await addDoc(projectsRef, {
+                name: projectName,
+                createdAt: new Date().toISOString()
+            });
+            event.target.reset();
+        } catch (error) {
+            console.error("Error adding project:", error);
+            setInfoModalContent({ title: "Erro", message: "Não foi possível adicionar o projeto." });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    // Define o projeto atual para navegação
+    const handleSelectProject = (project) => {
+        setCurrentProject(project);
+        setCurrentPage('dashboard');
+    };
+
+    // --- Funções de Gerenciamento de Despesas e Orçamento ---
+    const handleAddExpense = async (event) => {
+        event.preventDefault();
+        if (!currentProject || !userId || !db) return;
+        
+        const newExpense = {
+            description: event.target.description.value,
+            amount: parseFloat(event.target.amount.value),
+            category: event.target.category.value,
+            date: event.target.date.value
+        };
+
+        if (isNaN(newExpense.amount) || newExpense.amount <= 0) {
+            setInfoModalContent({ title: "Erro de Entrada", message: "Por favor, insira um valor de despesa válido." });
+            setShowInfoModal(true);
+            return;
+        }
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const expensesRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+        setLoading(true);
+        try {
+            await addDoc(expensesRef, newExpense);
+            setShowExpenseModal(false);
+            event.target.reset();
+        } catch (error) {
+            console.error("Error adding expense:", error);
+            setInfoModalContent({ title: "Erro ao Adicionar", message: "Ocorreu um erro ao adicionar a despesa." });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    // Excluir despesa
+    const handleDeleteExpense = async (id) => {
+        if (!currentProject || !userId || !db) return;
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const expenseDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses/${id}`);
+        setLoading(true);
+        try {
+            await deleteDoc(expenseDocRef);
+        } catch (error) {
+            console.error("Error deleting expense:", error);
+            setInfoModalContent({ title: "Erro ao Excluir", message: "Não foi possível excluir a despesa." });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Adicionar/Atualizar orçamento
+    const handleAddBudget = async (event) => {
+        event.preventDefault();
+        if (!currentProject || !userId || !db) return;
+        
+        const newBudget = {
+            amount: parseFloat(event.target.amount.value),
+            startDate: event.target.startDate.value,
+            endDate: event.target.endDate.value
+        };
+    
+        if (isNaN(newBudget.amount) || newBudget.amount <= 0) {
+            setInfoModalContent({ title: "Erro de Entrada", message: "Por favor, insira um valor de orçamento válido." });
+            setShowInfoModal(true);
+            return;
+        }
+        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const budgetDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budget/current`);
+        setLoading(true);
+        try {
+            await setDoc(budgetDocRef, newBudget);
+            setShowBudgetModal(false);
+        } catch (error) {
+            console.error("Error setting budget:", error);
+            setInfoModalContent({ title: "Erro ao Salvar", message: "Não foi possível salvar o orçamento." });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    // Exportar para PDF
+    const exportToPdf = async () => {
+        if (!currentProject) {
+            setInfoModalContent({ title: "Atenção", message: "Selecione um projeto para exportar." });
+            setShowInfoModal(true);
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+    
+            // Título do projeto
+            doc.setFontSize(22);
+            doc.text(`Relatório da Obra: ${currentProject.name}`, 14, 20);
+    
+            // Dados de resumo
+            doc.setFontSize(14);
+            const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+            const remainingBudget = budget ? budget.amount - totalExpenses : 0;
+            
+            doc.text(`Orçamento Total: R$ ${budget ? budget.amount.toFixed(2) : '0.00'}`, 14, 30);
+            doc.text(`Total de Despesas: R$ ${totalExpenses.toFixed(2)}`, 14, 38);
+            doc.text(`Orçamento Restante: R$ ${remainingBudget.toFixed(2)}`, 14, 46);
+
+            // Tabela de despesas
+            const tableData = expenses.map(exp => [
+                new Date(exp.date).toLocaleDateString(),
+                exp.description,
+                exp.category,
+                `R$ ${parseFloat(exp.amount).toFixed(2)}`
+            ]);
+            doc.autoTable({
+                startY: 60,
+                head: [['Data', 'Descrição', 'Categoria', 'Valor']],
+                body: tableData,
+                theme: 'striped',
+                headStyles: { fillColor: '#10b981' }
+            });
+
+            doc.save(`relatorio_${currentProject.name.replace(/\s/g, '_')}.pdf`);
+        } catch (error) {
+            console.error("Erro ao gerar PDF:", error);
+            setInfoModalContent({ title: "Erro ao Gerar PDF", message: "Ocorreu um erro ao gerar o PDF. Detalhes: " + error.message });
+            setShowInfoModal(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+    
+    // Calcula o total de despesas para o gráfico e o resumo
+    const totalExpenses = expenses.reduce((sum, expense) => sum + parseFloat(expense.amount), 0);
+    const remainingBudget = budget ? budget.amount - totalExpenses : 0;
+    
+    // Dados para o Gráfico de Rosca
+    const chartData = {
+        labels: ['Despesas', 'Restante'],
+        datasets: [{
+            data: [totalExpenses, Math.max(0, remainingBudget)],
+            backgroundColor: ['#ef4444', '#10b981'],
+            hoverOffset: 4
+        }]
+    };
+    
+    // Filtra as despesas com base na categoria
+    const filteredExpenses = filter === 'all'
+        ? expenses
+        : expenses.filter(exp => exp.category === filter);
+
+    // --- Renderização da UI ---
+    const renderContent = () => {
+        if (loading) {
+            return (
+                <div className="flex items-center justify-center min-h-screen">
+                    <div className="text-center">
+                        <svg className="animate-spin h-8 w-8 text-green-500 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p className="mt-4 text-gray-700 font-semibold">Carregando...</p>
+                    </div>
+                </div>
+            );
+        }
+        
+        switch (currentPage) {
+            case 'login':
+                return (
+                    <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                        <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
+                            <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Login</h2>
+                            <form onSubmit={handleLogin} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700">E-mail</label>
+                                    <input type="email" name="email" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700">Senha</label>
+                                    <input type="password" name="password" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                                </div>
+                                <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-full hover:bg-blue-700 transition">Entrar</button>
+                            </form>
+                            <p className="mt-4 text-center text-gray-600">
+                                Não tem uma conta? <a href="#" onClick={() => setCurrentPage('register')} className="text-blue-600 font-semibold hover:underline">Cadastre-se</a>
+                            </p>
+                        </div>
+                    </div>
+                );
+            case 'register':
+                return (
+                    <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                        <div className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
+                            <h2 className="text-2xl font-bold text-center text-gray-800 mb-6">Cadastro</h2>
+                            <form onSubmit={handleRegister} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700">E-mail</label>
+                                    <input type="email" name="email" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700">Senha</label>
+                                    <input type="password" name="password" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                                </div>
+                                <button type="submit" className="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-full hover:bg-green-700 transition">Cadastrar</button>
+                            </form>
+                            <p className="mt-4 text-center text-gray-600">
+                                Já tem uma conta? <a href="#" onClick={() => setCurrentPage('login')} className="text-green-600 font-semibold hover:underline">Login</a>
+                            </p>
+                        </div>
+                    </div>
+                );
+            case 'projects':
+                return (
+                    <div className="w-full max-w-2xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
+                        <header className="flex justify-between items-center mb-6">
+                            <h1 className="text-3xl font-bold text-gray-800">Minhas Obras</h1>
+                            <button onClick={handleLogout} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition">
+                                Sair
+                            </button>
+                        </header>
+                        <div className="mb-8">
+                            <form onSubmit={handleAddProject} className="flex space-x-2">
+                                <input 
+                                    type="text" 
+                                    name="projectName" 
+                                    placeholder="Nome da nova obra" 
+                                    required 
+                                    className="flex-1 border border-gray-300 rounded-full px-4 py-2 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                                <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-full font-semibold hover:bg-blue-700 transition">
+                                    Adicionar Obra
+                                </button>
+                            </form>
+                        </div>
+                        <h2 className="text-xl font-bold text-gray-800 mb-4">Lista de Obras</h2>
+                        <ul className="space-y-4">
+                            {projects.length > 0 ? (
+                                projects.map(project => (
+                                    <li key={project.id} className="bg-gray-50 p-6 rounded-xl shadow-md cursor-pointer hover:bg-gray-100 transition" onClick={() => handleSelectProject(project)}>
+                                        <h3 className="text-lg font-semibold text-gray-800">{project.name}</h3>
+                                        <p className="text-sm text-gray-500 mt-1">
+                                            Criado em: {new Date(project.createdAt).toLocaleDateString()}
+                                        </p>
+                                    </li>
+                                ))
+                            ) : (
+                                <p className="text-center text-gray-500">Nenhuma obra encontrada. Adicione uma para começar!</p>
+                            )}
+                        </ul>
+                    </div>
+                );
+            case 'dashboard':
+                return (
+                    <div className="w-full max-w-5xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
+                        <header className="flex justify-between items-center mb-6">
+                            <h1 className="text-3xl font-bold text-gray-800">{currentProject.name}</h1>
+                            <div className="flex items-center space-x-2">
+                                <button onClick={() => setCurrentPage('projects')} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition">
+                                    Voltar para Obras
+                                </button>
+                                <button onClick={handleLogout} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-semibold hover:bg-gray-300 transition">
+                                    Sair
+                                </button>
+                            </div>
+                        </header>
+                        
+                        <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                            <div className="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
+                                <span className="text-sm font-semibold text-gray-500">Orçamento Total</span>
+                                <span id="total-budget" className="text-2xl font-bold text-gray-800 mt-2">R$ {budget ? budget.amount.toFixed(2) : '0.00'}</span>
+                                <p className="text-xs text-gray-400 mt-1">{budget ? `${new Date(budget.startDate).toLocaleDateString()} - ${new Date(budget.endDate).toLocaleDateString()}` : 'Não configurado'}</p>
+                                <button onClick={() => setShowBudgetModal(true)} className="mt-3 text-blue-500 text-sm hover:underline">Configurar Orçamento</button>
+                            </div>
+                            <div className="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
+                                <span className="text-sm font-semibold text-gray-500">Total de Despesas</span>
+                                <span id="total-expenses" className="text-2xl font-bold text-red-600 mt-2">R$ {totalExpenses.toFixed(2)}</span>
+                            </div>
+                            <div className={`bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center ${budget ? '' : 'hidden'}`}>
+                                <span className="text-sm font-semibold text-gray-500">Orçamento Restante</span>
+                                <span id="remaining-budget" className={`text-2xl font-bold mt-2 ${remainingBudget >= 0 ? 'text-green-600' : 'text-red-600'}`}>R$ {remainingBudget.toFixed(2)}</span>
+                            </div>
+                        </section>
+                
+                        <section className="bg-gray-50 p-6 rounded-xl shadow-md mb-8">
+                            <h2 className="text-xl font-bold text-gray-800 mb-4">Análise de Orçamento</h2>
+                            <div className="w-full h-64 flex justify-center items-center">
+                                <Doughnut data={chartData} options={{ maintainAspectRatio: false }} />
+                            </div>
+                        </section>
+                
+                        <section className="bg-gray-50 p-6 rounded-xl shadow-md">
+                            <div className="flex flex-col md:flex-row justify-between items-center mb-4">
+                                <h2 className="text-xl font-bold text-gray-800 mb-2 md:mb-0">Histórico de Despesas</h2>
+                                <div className="flex items-center space-x-4">
+                                    <select value={filter} onChange={(e) => setFilter(e.target.value)} className="form-select border border-gray-300 rounded-lg p-2 text-sm font-medium focus:ring-blue-500 focus:border-blue-500">
+                                        <option value="all">Todas as Categorias</option>
+                                        <option value="Material">Material</option>
+                                        <option value="Mão de Obra">Mão de Obra</option>
+                                        <option value="Equipamento">Equipamento</option>
+                                        <option value="Serviços">Serviços</option>
+                                        <option value="Outros">Outros</option>
+                                    </select>
+                                    <button onClick={() => setShowExpenseModal(true)} className="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-green-700 transition">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Nova Despesa</span>
+                                    </button>
+                                    <button onClick={exportToPdf} className="flex items-center space-x-2 bg-red-500 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-red-600 transition">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L6.707 6.707a1 1 0 01-1.414 0z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Exportar PDF</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <ul id="expense-list" className="space-y-4">
+                                {filteredExpenses.length > 0 ? (
+                                    filteredExpenses.map(expense => (
+                                        <li key={expense.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg shadow-sm">
+                                            <div className="flex-1">
+                                                <span className="font-semibold text-gray-800">{expense.description}</span>
+                                                <span className="block text-sm text-gray-500">{new Date(expense.date).toLocaleDateString()}</span>
+                                                <span className="block text-xs font-medium text-gray-600 rounded-full px-2 py-1 mt-1 bg-gray-200 inline-block">{expense.category}</span>
+                                            </div>
+                                            <div className="flex items-center space-x-2">
+                                                <span className="text-lg font-bold text-red-600">R$ {parseFloat(expense.amount).toFixed(2)}</span>
+                                                <button onClick={() => {
+                                                    setConfirmationAction(() => () => handleDeleteExpense(expense.id));
+                                                    setShowConfirmationModal(true);
+                                                }} className="text-red-500 hover:text-red-700 p-2">
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                                    </svg>
+                                                </button>
+                                            </div>
+                                        </li>
+                                    ))
+                                ) : (
+                                    <tr>
+                                        <td colSpan="5" className="px-6 py-4 text-center text-sm text-gray-500">
+                                            {expenses.length === 0 ? 'Nenhuma despesa registrada ainda.' : 'Nenhum resultado encontrado.'}
+                                        </td>
+                                    </tr>
+                                )}
+                            </ul>
+                        </section>
+                    </div>
+                );
+            default:
+                return null;
+        }
+    };
+
+    return (
+        <>
+            {/* Renderiza o conteúdo da página com base no estado atual */}
+            {renderContent()}
+
+            {/* Modal para Adicionar Despesa */}
+            {showExpenseModal && (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-40">
+                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold">Adicionar Nova Despesa</h3>
+                            <button onClick={() => setShowExpenseModal(false)} className="text-gray-500 hover:text-gray-700">
+                                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddExpense}>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Descrição</label>
+                                <input type="text" name="description" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Valor (R$)</label>
+                                <input type="number" name="amount" step="0.01" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Categoria</label>
+                                <select name="category" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
+                                    <option value="Material">Material</option>
+                                    <option value="Mão de Obra">Mão de Obra</option>
+                                    <option value="Equipamento">Equipamento</option>
+                                    <option value="Serviços">Serviços</option>
+                                    <option value="Outros">Outros</option>
+                                </select>
+                            </div>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Data</label>
+                                <input type="date" name="date" required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <button type="submit" className="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-full hover:bg-green-700 transition">Adicionar Despesa</button>
+                        </form>
+                    </div>
+                </div>
+            )}
+            
+            {/* Modal para Configurar Orçamento */}
+            {showBudgetModal && (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center z-40">
+                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-lg font-bold">Configurar Orçamento</h3>
+                            <button onClick={() => setShowBudgetModal(false)} className="text-gray-500 hover:text-gray-700">
+                                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                        <form onSubmit={handleAddBudget}>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Valor do Orçamento (R$)</label>
+                                <input type="number" name="amount" step="0.01" defaultValue={budget ? budget.amount : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Início do Período</label>
+                                <input type="date" name="startDate" defaultValue={budget ? budget.startDate : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-gray-700">Fim do Período</label>
+                                <input type="date" name="endDate" defaultValue={budget ? budget.endDate : ''} required className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500" />
+                            </div>
+                            <button type="submit" className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-full hover:bg-blue-700 transition">Salvar Orçamento</button>
+                        </form>
+                    </div>
+                </div>
+            )}
+            
+            {showInfoModal && (
+                <InfoModal
+                    title={infoModalContent.title}
+                    message={infoModalContent.message}
+                    onClose={() => setShowInfoModal(false)}
+                />
+            )}
+            
+            {showConfirmationModal && (
+                <ConfirmationModal
+                    message="Tem certeza que deseja excluir esta despesa?"
+                    onConfirm={() => { confirmationAction(); setShowConfirmationModal(false); }}
+                    onCancel={() => setShowConfirmationModal(false)}
+                />
+            )}
+            
+            <footer className="mt-8 pt-4 border-t border-gray-200 text-center">
+                <p className="text-gray-500 text-xs">
+                    ID do Usuário: <span className="font-mono break-all">{userId}</span>
+                </p>
+            </footer>
+        </>
+    );
+};
+
+export default App;
