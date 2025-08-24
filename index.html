@@ -1,733 +1,794 @@
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestão de Obra Simplificada</title>
-    <!-- Inclui a fonte Inter do Google Fonts para uma estética moderna -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Inclui a biblioteca Tailwind CSS para estilização rápida e responsiva -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #f0f4f8; /* Cor de fundo suave */
-        }
-        .container {
-            max-width: 90%;
-            margin-left: auto;
-            margin-right: auto;
-        }
-        @media (min-width: 768px) {
-            .container {
-                max-width: 1024px;
-            }
-        }
-        .modal-overlay {
-            background-color: rgba(0, 0, 0, 0.5);
-        }
-    </style>
-</head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
-    <!-- Overlay de carregamento -->
-    <div id="loadingOverlay" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-lg shadow-xl text-center">
-            <svg class="animate-spin h-8 w-8 text-green-500 mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <p id="loadingMessage" class="mt-4 text-gray-700 font-semibold">Carregando...</p>
-        </div>
-    </div>
+import { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+    getAuth, 
+    signInWithCustomToken, 
+    onAuthStateChanged, 
+    signInAnonymously
+} from 'firebase/auth';
+import { 
+    getFirestore, 
+    doc, 
+    setDoc, 
+    onSnapshot, 
+    collection, 
+    query, 
+    addDoc, 
+    deleteDoc,
+    getDocs,
+    where,
+    runTransaction
+} from 'firebase/firestore';
+import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
+import { Doughnut, Bar } from 'react-chartjs-2';
+import { format, parseISO } from 'date-fns';
 
-    <!-- Container principal da aplicação -->
-    <main id="mainContainer" class="hidden w-full max-w-5xl mx-auto p-4 md:p-8 bg-white shadow-xl rounded-2xl my-8">
-        <!-- Cabeçalho -->
-        <header class="flex justify-between items-center mb-6">
-            <h1 class="text-3xl font-bold text-gray-800">Gestão de Obra</h1>
-            <button id="new-expense-btn" class="flex items-center space-x-2 bg-green-600 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-green-700 transition">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                    <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
-                </svg>
-                <span>Nova Despesa</span>
-            </button>
-        </header>
+// Register Chart.js components
+ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
 
-        <!-- Seção de Resumo -->
-        <section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <!-- Orçamento Total -->
-            <div class="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
-                <span class="text-sm font-semibold text-gray-500">Orçamento Total</span>
-                <span id="total-budget" class="text-2xl font-bold text-gray-800 mt-2">R$ 0.00</span>
-                <p id="budget-timeline" class="text-xs text-gray-400 mt-1"></p>
-                <button id="add-budget-btn" class="mt-3 text-blue-500 text-sm hover:underline">Configurar Orçamento</button>
-            </div>
+// Placeholder para as variáveis globais
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-            <!-- Total de Despesas -->
-            <div class="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
-                <span id="total-expenses-text" class="text-sm font-semibold text-gray-500">Total de Despesas</span>
-                <span id="total-expenses" class="text-2xl font-bold text-red-600 mt-2">R$ 0.00</span>
-            </div>
+// The main App component
+const App = () => {
+    // --- Authentication and Project State ---
+    const [user, setUser] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [currentProject, setCurrentProject] = useState(null);
+    const [projects, setProjects] = useState([]);
 
-            <!-- Orçamento Restante -->
-            <div id="budget-status" class="bg-gray-50 p-6 rounded-xl shadow-md flex flex-col items-center">
-                <span id="remaining-budget-text" class="text-sm font-semibold text-gray-500">Orçamento Restante</span>
-                <span id="remaining-budget" class="text-2xl font-bold text-green-600 mt-2">R$ 0.00</span>
-            </div>
-        </section>
+    // --- Data and UI State ---
+    const [expenses, setExpenses] = useState([]);
+    const [budgetItem, setBudgetItem] = useState('');
+    const [budgetAmount, setBudgetAmount] = useState('');
+    const [budgets, setBudgets] = useState([]);
+    const [expenseDescription, setExpenseDescription] = useState('');
+    const [expenseAmount, setExpenseAmount] = useState('');
+    const [expenseDate, setExpenseDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+    const [selectedFilter, setSelectedFilter] = useState('all');
+    const [showInfoModal, setShowInfoModal] = useState(false);
+    const [infoModalContent, setInfoModalContent] = useState({ title: '', message: '' });
+    const [activeTab, setActiveTab] = useState('dashboard');
+    const [searchTerm, setSearchTerm] = useState('');
+    const [expenseType, setExpenseType] = useState('Material');
 
-        <!-- Seção do Gráfico -->
-        <section class="bg-gray-50 p-6 rounded-xl shadow-md mb-8">
-            <h2 class="text-xl font-bold text-gray-800 mb-4">Análise de Orçamento</h2>
-            <div class="w-full h-64 flex justify-center items-center">
-                <canvas id="budget-chart"></canvas>
-            </div>
-        </section>
+    // --- Refs ---
+    const mainContainerRef = useRef(null);
 
-        <!-- Seção de Lista de Despesas e Filtros -->
-        <section class="bg-gray-50 p-6 rounded-xl shadow-md">
-            <div class="flex flex-col md:flex-row justify-between items-center mb-4">
-                <h2 class="text-xl font-bold text-gray-800 mb-2 md:mb-0">Histórico de Despesas</h2>
-                <div class="flex items-center space-x-4">
-                    <select id="category-filter" class="form-select border border-gray-300 rounded-lg p-2 text-sm font-medium focus:ring-blue-500 focus:border-blue-500">
-                        <option value="all">Todas as Categorias</option>
-                        <option value="Material">Material</option>
-                        <option value="Mão de Obra">Mão de Obra</option>
-                        <option value="Equipamento">Equipamento</option>
-                        <option value="Serviços">Serviços</option>
-                        <option value="Outros">Outros</option>
-                    </select>
-                    <button id="export-pdf-btn" class="flex items-center space-x-2 bg-red-500 text-white px-4 py-2 rounded-full font-semibold shadow hover:bg-red-600 transition">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L6.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd" />
-                        </svg>
-                        <span>Exportar PDF</span>
-                    </button>
-                </div>
-            </div>
-            <ul id="expense-list" class="space-y-4">
-                <!-- Despesas serão renderizadas aqui pelo JavaScript -->
-            </ul>
-        </section>
-    </main>
-
-    <!-- Modal para Adicionar Nova Despesa -->
-    <div id="new-expense-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center hidden z-40">
-        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-bold">Adicionar Nova Despesa</h3>
-                <button id="close-expense-modal" class="text-gray-500 hover:text-gray-700">
-                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-            <form id="expense-form">
-                <div class="mb-4">
-                    <label for="expense-description" class="block text-sm font-semibold text-gray-700">Descrição</label>
-                    <input type="text" id="expense-description" name="description" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div class="mb-4">
-                    <label for="expense-amount" class="block text-sm font-semibold text-gray-700">Valor (R$)</label>
-                    <input type="number" id="expense-amount" name="amount" step="0.01" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div class="mb-4">
-                    <label for="expense-category" class="block text-sm font-semibold text-gray-700">Categoria</label>
-                    <select id="expense-category" name="category" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                        <option value="Material">Material</option>
-                        <option value="Mão de Obra">Mão de Obra</option>
-                        <option value="Equipamento">Equipamento</option>
-                        <option value="Serviços">Serviços</option>
-                        <option value="Outros">Outros</option>
-                    </select>
-                </div>
-                <div class="mb-4">
-                    <label for="expense-date" class="block text-sm font-semibold text-gray-700">Data</label>
-                    <input type="date" id="expense-date" name="date" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <button type="submit" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-full hover:bg-green-700 transition">Adicionar Despesa</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Modal para Configurar Orçamento -->
-    <div id="budget-modal" class="fixed inset-0 bg-gray-900 bg-opacity-50 flex items-center justify-center hidden z-40">
-        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg font-bold">Configurar Orçamento</h3>
-                <button id="close-budget-modal" class="text-gray-500 hover:text-gray-700">
-                    <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                </button>
-            </div>
-            <form id="budget-form">
-                <div class="mb-4">
-                    <label for="budget-amount" class="block text-sm font-semibold text-gray-700">Valor do Orçamento (R$)</label>
-                    <input type="number" id="budget-amount" name="amount" step="0.01" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div class="mb-4">
-                    <label for="budget-start-date" class="block text-sm font-semibold text-gray-700">Início do Período</label>
-                    <input type="date" id="budget-start-date" name="start-date" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <div class="mb-4">
-                    <label for="budget-end-date" class="block text-sm font-semibold text-gray-700">Fim do Período</label>
-                    <input type="date" id="budget-end-date" name="end-date" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-full hover:bg-blue-700 transition">Salvar Orçamento</button>
-            </form>
-        </div>
-    </div>
-
-    <!-- Modal de Mensagem -->
-    <div id="messageModal" class="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden">
-        <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
-            <h4 id="modalTitle" class="text-lg font-bold mb-2"></h4>
-            <p id="modalMessage" class="text-gray-700 mb-4"></p>
-            <button id="closeModalBtn" class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition">OK</button>
-        </div>
-    </div>
-    
-    <!-- Modal de Confirmação customizado -->
-    <div id="confirmationModal" class="fixed inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50 hidden">
-        <div class="bg-white rounded-lg p-6 shadow-xl w-full max-w-sm text-center">
-            <h4 id="confirmationTitle" class="text-lg font-bold mb-2">Confirmação</h4>
-            <p id="confirmationMessage" class="text-gray-700 mb-4">Tem certeza que deseja excluir esta despesa?</p>
-            <div class="flex justify-center space-x-4">
-                <button id="confirmBtn" class="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition">Excluir</button>
-                <button id="cancelBtn" class="bg-gray-300 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-400 transition">Cancelar</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Inclui as bibliotecas JavaScript e o seu código -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
-    
-    <script>
-        // Este arquivo contém todo o código da aplicação em JavaScript.
-        // Ele foi modificado para ser um arquivo .js padrão e ser compatível com servidores web simples.
-
-        // Variáveis globais para o IndexedDB
-        let db;
-        const DB_NAME = 'gestaoObraDB';
-        const DB_VERSION = 1;
-        const EXPENSES_STORE = 'expenses';
-        const BUDGET_STORE = 'budget';
-        let isDbReady = false;
-
-        // Variáveis globais para os modais
-        const messageModal = document.getElementById('messageModal');
-        const modalMessage = document.getElementById('modalMessage');
-        const modalTitle = document.getElementById('modalTitle');
-        const closeModalBtn = document.getElementById('closeModalBtn');
-        
-        const confirmationModal = document.getElementById('confirmationModal');
-        const confirmationMessage = document.getElementById('confirmationMessage');
-        const confirmBtn = document.getElementById('confirmBtn');
-        const cancelBtn = document.getElementById('cancelBtn');
-
-        // Variáveis para o overlay de carregamento
-        const loadingOverlay = document.getElementById('loadingOverlay');
-        const loadingMessage = document.getElementById('loadingMessage');
-        const mainContainer = document.getElementById('mainContainer');
-
-        // Gráfico
-        let budgetChart;
-
-        // Referências aos elementos do DOM
-        const newExpenseBtn = document.getElementById('new-expense-btn');
-        const newExpenseModal = document.getElementById('new-expense-modal');
-        const closeExpenseModal = document.getElementById('close-expense-modal');
-        const expenseForm = document.getElementById('expense-form');
-        const totalExpensesEl = document.getElementById('total-expenses');
-        const remainingBudgetEl = document.getElementById('remaining-budget');
-        const expenseList = document.getElementById('expense-list');
-        const categoryFilter = document.getElementById('category-filter');
-        const exportPdfBtn = document.getElementById('export-pdf-btn');
-        const totalBudgetEl = document.getElementById('total-budget');
-        const totalExpensesTextEl = document.getElementById('total-expenses-text');
-        const remainingBudgetTextEl = document.getElementById('remaining-budget-text');
-        const budgetTimelineEl = document.getElementById('budget-timeline');
-        const addBudgetBtn = document.getElementById('add-budget-btn');
-        const budgetModal = document.getElementById('budget-modal');
-        const closeBudgetModal = document.getElementById('close-budget-modal');
-        const budgetForm = document.getElementById('budget-form');
-        const budgetAmountInput = document.getElementById('budget-amount');
-        const budgetStartDateInput = document.getElementById('budget-start-date');
-        const budgetEndDateInput = document.getElementById('budget-end-date');
-        const budgetStatus = document.getElementById('budget-status');
-
-        // --- Funções do IndexedDB ---
-        function openDb() {
-            return new Promise((resolve, reject) => {
-                if (isDbReady) {
-                    resolve(db);
-                    return;
-                }
-                showLoading("Abrindo banco de dados...");
-                const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-                request.onupgradeneeded = (event) => {
-                    const db = event.target.result;
-                    if (!db.objectStoreNames.contains(EXPENSES_STORE)) {
-                        db.createObjectStore(EXPENSES_STORE, { keyPath: 'id', autoIncrement: true });
-                    }
-                    if (!db.objectStoreNames.contains(BUDGET_STORE)) {
-                        db.createObjectStore(BUDGET_STORE, { keyPath: 'id', autoIncrement: true });
-                    }
-                };
-
-                request.onsuccess = (event) => {
-                    db = event.target.result;
-                    isDbReady = true;
-                    console.log("Banco de dados aberto com sucesso.");
-                    hideLoading();
-                    resolve(db);
-                };
-
-                request.onerror = (event) => {
-                    const error = event.target.error;
-                    console.error("Erro ao abrir o banco de dados:", error);
-                    hideLoading();
-                    reject(error);
-                };
-            });
-        }
-
-        function addData(storeName, data) {
-            return new Promise((resolve, reject) => {
-                showLoading("Salvando dados...");
-                const transaction = db.transaction([storeName], 'readwrite');
-                const store = transaction.objectStore(storeName);
-                const request = store.add(data);
-
-                request.onsuccess = () => {
-                    hideLoading();
-                    resolve(request.result);
-                };
-
-                request.onerror = (event) => {
-                    hideLoading();
-                    reject(event.target.error);
-                };
-            });
-        }
-
-        function updateData(storeName, data) {
-            return new Promise((resolve, reject) => {
-                showLoading("Atualizando dados...");
-                const transaction = db.transaction([storeName], 'readwrite');
-                const store = transaction.objectStore(storeName);
-                const request = store.put(data);
-
-                request.onsuccess = () => {
-                    hideLoading();
-                    resolve(request.result);
-                };
-
-                request.onerror = (event) => {
-                    hideLoading();
-                    reject(event.target.error);
-                };
-            });
-        }
-
-        function getData(storeName) {
-            return new Promise((resolve, reject) => {
-                showLoading("Buscando dados...");
-                const transaction = db.transaction([storeName], 'readonly');
-                const store = transaction.objectStore(storeName);
-                const request = store.getAll();
-
-                request.onsuccess = () => {
-                    hideLoading();
-                    resolve(request.result);
-                };
-
-                request.onerror = (event) => {
-                    hideLoading();
-                    reject(event.target.error);
-                };
-            });
-        }
-
-        function deleteData(storeName, id) {
-            return new Promise((resolve, reject) => {
-                showLoading("Excluindo dados...");
-                const transaction = db.transaction([storeName], 'readwrite');
-                const store = transaction.objectStore(storeName);
-                const request = store.delete(id);
-
-                request.onsuccess = () => {
-                    hideLoading();
-                    resolve();
-                };
-
-                request.onerror = (event) => {
-                    hideLoading();
-                    reject(event.target.error);
-                };
-            });
-        }
-
-        // --- Funções de Manipulação de Dados e UI ---
-        let allExpenses = [];
-        let currentBudget = null;
-
-        async function loadExpenses() {
-            try {
-                allExpenses = await getData(EXPENSES_STORE);
-                console.log("Despesas carregadas:", allExpenses);
-            } catch (error) {
-                console.error("Erro ao carregar despesas:", error);
-                showMessageModal("Erro", "Não foi possível carregar as despesas. Tente novamente.");
-            }
-        }
-
-        async function loadBudget() {
-            try {
-                const budgets = await getData(BUDGET_STORE);
-                currentBudget = budgets.length > 0 ? budgets[0] : null;
-                console.log("Orçamento carregado:", currentBudget);
-                renderBudget();
-            } catch (error) {
-                console.error("Erro ao carregar orçamento:", error);
-                showMessageModal("Erro", "Não foi possível carregar o orçamento. Tente novamente.");
-            }
-        }
-
-        function renderExpenses(expenses) {
-            expenseList.innerHTML = '';
-            expenses.forEach(expense => {
-                const li = document.createElement('li');
-                li.className = 'flex items-center justify-between p-4 bg-gray-50 rounded-lg shadow-sm mb-2';
-                li.innerHTML = `
-                    <div class="flex-1">
-                        <span class="font-semibold text-gray-800">${expense.description}</span>
-                        <span class="block text-sm text-gray-500">${new Date(expense.date).toLocaleDateString()}</span>
-                        <span class="block text-xs font-medium text-gray-600 rounded-full px-2 py-1 mt-1 bg-gray-200 inline-block">${expense.category}</span>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <span class="text-lg font-bold text-red-600">R$ ${parseFloat(expense.amount).toFixed(2)}</span>
-                        <button onclick="editExpense(${expense.id})" class="text-blue-500 hover:text-blue-700 p-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zm-5.042 5.042l-2.828 2.828-.793-.793 2.828-2.828.793.793zm-.793.793l-.793.793 4.243 4.243 2.828-2.828-4.243-4.243z" />
-                            </svg>
-                        </button>
-                        <button onclick="showDeleteConfirmation(${expense.id})" class="text-red-500 hover:text-red-700 p-2">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-                            </svg>
-                        </button>
-                    </div>
-                `;
-                expenseList.appendChild(li);
-            });
-        }
-
-        function updateSummary() {
-            const totalExpenses = allExpenses.reduce((sum, expense) => sum + parseFloat(expense.amount), 0);
-            totalExpensesEl.textContent = `R$ ${totalExpenses.toFixed(2)}`;
-
-            if (currentBudget) {
-                const remaining = currentBudget.amount - totalExpenses;
-                remainingBudgetEl.textContent = `R$ ${remaining.toFixed(2)}`;
-                remainingBudgetEl.className = `font-bold ${remaining >= 0 ? 'text-green-600' : 'text-red-600'}`;
-                remainingBudgetTextEl.textContent = `Orçamento Restante`;
-                updateBudgetChart(totalExpenses, remaining);
-            } else {
-                remainingBudgetEl.textContent = `R$ 0.00`;
-                remainingBudgetEl.className = 'font-bold text-gray-500';
-                remainingBudgetTextEl.textContent = `(Sem Orçamento)`;
-                updateBudgetChart(totalExpenses, 0);
-            }
-        }
-
-        function renderBudget() {
-            if (currentBudget) {
-                totalBudgetEl.textContent = `R$ ${currentBudget.amount.toFixed(2)}`;
-                totalExpensesTextEl.textContent = `Total de Despesas`;
-                budgetStatus.classList.remove('hidden');
-                budgetTimelineEl.textContent = `${new Date(currentBudget.startDate).toLocaleDateString()} - ${new Date(currentBudget.endDate).toLocaleDateString()}`;
-            } else {
-                totalBudgetEl.textContent = 'R$ 0.00';
-                totalExpensesTextEl.textContent = 'Total de Despesas';
-                budgetStatus.classList.add('hidden');
-                budgetTimelineEl.textContent = '';
-            }
-        }
-
-        function updateBudgetChart(totalExpenses, remaining) {
-            if (budgetChart) {
-                budgetChart.destroy();
-            }
-
-            const ctx = document.getElementById('budget-chart').getContext('2d');
-            budgetChart = new Chart(ctx, {
-                type: 'pie',
-                data: {
-                    labels: ['Despesas', 'Restante'],
-                    datasets: [{
-                        data: [totalExpenses, Math.max(0, remaining)],
-                        backgroundColor: ['#ef4444', '#10b981'],
-                        hoverOffset: 4
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: {
-                                font: {
-                                    family: 'Inter',
-                                    size: 14
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        function filterAndRenderExpenses() {
-            const selectedCategory = categoryFilter.value;
-            const filteredExpenses = selectedCategory === 'all'
-                ? allExpenses
-                : allExpenses.filter(expense => expense.category === selectedCategory);
-            renderExpenses(filteredExpenses);
-        }
-
-        // --- Funções de Evento e Lógica de UI ---
-        function showMessageModal(title, message) {
-            modalTitle.textContent = title;
-            modalMessage.textContent = message;
-            messageModal.classList.remove('hidden');
-        }
-
-        function hideMessageModal() {
-            messageModal.classList.add('hidden');
-        }
-
-        function showConfirmationModal(message, onConfirm) {
-            confirmationMessage.textContent = message;
-            confirmationModal.classList.remove('hidden');
-            
-            confirmBtn.onclick = () => {
-                confirmationModal.classList.add('hidden');
-                onConfirm();
-            };
-            
-            cancelBtn.onclick = () => {
-                confirmationModal.classList.add('hidden');
-            };
-        }
-
-        function showLoading(message) {
-            loadingMessage.textContent = message;
-            loadingOverlay.classList.remove('hidden');
-        }
-
-        function hideLoading() {
-            loadingOverlay.classList.add('hidden');
-        }
-
-        async function addExpense(event) {
-            event.preventDefault();
-            const newExpense = {
-                description: document.getElementById('expense-description').value,
-                amount: parseFloat(document.getElementById('expense-amount').value),
-                category: document.getElementById('expense-category').value,
-                date: document.getElementById('expense-date').value
-            };
-
-            if (isNaN(newExpense.amount) || newExpense.amount <= 0) {
-                showMessageModal("Erro de Entrada", "Por favor, insira um valor de despesa válido.");
+    // --- Firebase Initialization and Authentication ---
+    useEffect(() => {
+        const initializeFirebase = async () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase config is missing.");
+                setLoading(false);
                 return;
             }
 
             try {
-                await addData(EXPENSES_STORE, newExpense);
-                await loadExpenses();
-                filterAndRenderExpenses();
-                updateSummary();
-                newExpenseModal.classList.add('hidden');
-                expenseForm.reset();
-            } catch (error) {
-                showMessageModal("Erro ao Adicionar", "Ocorreu um erro ao adicionar a despesa.");
-                console.error("Erro ao adicionar despesa:", error);
-            }
-        }
+                const app = initializeApp(firebaseConfig);
+                const firestore = getFirestore(app);
+                const authInstance = getAuth(app);
+                
+                setDb(firestore);
+                setAuth(authInstance);
 
-        async function deleteExpense(id) {
-            try {
-                await deleteData(EXPENSES_STORE, id);
-                await loadExpenses();
-                filterAndRenderExpenses();
-                updateSummary();
-            } catch (error) {
-                showMessageModal("Erro ao Excluir", "Não foi possível excluir a despesa.");
-                console.error("Erro ao excluir despesa:", error);
-            }
-        }
-
-        function showDeleteConfirmation(id) {
-            showConfirmationModal("Tem certeza que deseja excluir esta despesa?", () => deleteExpense(id));
-        }
-
-        async function editExpense(id) {
-            const expenseToEdit = allExpenses.find(e => e.id === id);
-            if (!expenseToEdit) {
-                showMessageModal("Erro", "Despesa não encontrada.");
-                return;
-            }
-            const newDescription = prompt("Editar descrição:", expenseToEdit.description);
-            const newAmount = prompt("Editar valor:", expenseToEdit.amount);
-
-            if (newDescription !== null && newAmount !== null) {
-                const updatedExpense = {
-                    ...expenseToEdit,
-                    description: newDescription,
-                    amount: parseFloat(newAmount)
-                };
-                try {
-                    await updateData(EXPENSES_STORE, updatedExpense);
-                    await loadExpenses();
-                    filterAndRenderExpenses();
-                    updateSummary();
-                } catch (error) {
-                    showMessageModal("Erro ao Atualizar", "Não foi possível atualizar a despesa.");
-                    console.error("Erro ao atualizar despesa:", error);
-                }
-            }
-        }
-
-        async function addBudget(event) {
-            event.preventDefault();
-            const newBudget = {
-                amount: parseFloat(budgetAmountInput.value),
-                startDate: budgetStartDateInput.value,
-                endDate: budgetEndDateInput.value
-            };
-
-            if (isNaN(newBudget.amount) || newBudget.amount <= 0) {
-                showMessageModal("Erro de Entrada", "Por favor, insira um valor de orçamento válido.");
-                return;
-            }
-
-            try {
-                if (currentBudget) {
-                    await updateData(BUDGET_STORE, { ...currentBudget, ...newBudget });
-                } else {
-                    await addData(BUDGET_STORE, newBudget);
-                }
-                await loadBudget();
-                updateSummary();
-                budgetModal.classList.add('hidden');
-                budgetForm.reset();
-            } catch (error) {
-                showMessageModal("Erro ao Salvar", "Não foi possível salvar o orçamento.");
-                console.error("Erro ao salvar orçamento:", error);
-            }
-        }
-
-        // --- Funções para Exportação de PDF ---
-        async function exportToPdf() {
-            showLoading("Gerando PDF...");
-            try {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF();
-
-                // Título e resumo
-                doc.setFontSize(22);
-                doc.text("Relatório de Gestão de Obra", 14, 20);
-
-                doc.setFontSize(14);
-                doc.text(`Orçamento Total: R$ ${currentBudget ? currentBudget.amount.toFixed(2) : '0.00'}`, 14, 30);
-                doc.text(`Total de Despesas: R$ ${allExpenses.reduce((sum, e) => sum + e.amount, 0).toFixed(2)}`, 14, 38);
-                doc.text(`Orçamento Restante: R$ ${currentBudget ? (currentBudget.amount - allExpenses.reduce((sum, e) => sum + e.amount, 0)).toFixed(2) : '0.00'}`, 14, 46);
-
-                // Tabela de despesas
-                const tableData = allExpenses.map(exp => [
-                    new Date(exp.date).toLocaleDateString(),
-                    exp.description,
-                    exp.category,
-                    `R$ ${exp.amount.toFixed(2)}`
-                ]);
-                doc.autoTable({
-                    startY: 60,
-                    head: [['Data', 'Descrição', 'Categoria', 'Valor']],
-                    body: tableData,
-                    theme: 'striped',
-                    headStyles: { fillColor: '#10b981' }
+                // Listen for authentication state changes
+                const unsubscribe = onAuthStateChanged(authInstance, async (currentUser) => {
+                    if (currentUser) {
+                        setUser(currentUser);
+                        setUserId(currentUser.uid);
+                    } else {
+                        // Sign in anonymously if not authenticated
+                        await signInAnonymously(authInstance);
+                    }
+                    setLoading(false);
                 });
 
-                // Gráfico (como imagem)
-                const canvas = document.getElementById('budget-chart');
-                if (canvas) {
-                    const chartDataUrl = canvas.toDataURL('image/png', 1.0);
-                    const chartImageWidth = 100;
-                    const chartImageHeight = canvas.height * chartImageWidth / canvas.width;
-                    const chartX = (doc.internal.pageSize.width - chartImageWidth) / 2;
-                    doc.addImage(chartDataUrl, 'PNG', chartX, doc.autoTable.previous.finalY + 10, chartImageWidth, chartImageHeight);
-                }
-
-                // Salvar o PDF
-                doc.save('relatorio_obra.pdf');
+                return () => unsubscribe();
             } catch (error) {
-                showMessageModal("Erro ao Gerar PDF", "Ocorreu um erro ao gerar o PDF. Detalhes: " + error.message);
-                console.error("Erro ao gerar PDF:", error);
-            } finally {
-                hideLoading();
+                console.error("Error initializing Firebase:", error);
+                setInfoModalContent({
+                    title: "Erro de Inicialização",
+                    message: "Não foi possível conectar ao Firebase. Verifique sua conexão e tente novamente."
+                });
+                setShowInfoModal(true);
+                setLoading(false);
             }
+        };
+
+        initializeFirebase();
+    }, []);
+
+    // --- Real-time data listener ---
+    useEffect(() => {
+        if (!db || !userId) return;
+
+        // Listener for projects
+        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        const projectsUnsubscribe = onSnapshot(projectsColRef, (snapshot) => {
+            const projectsData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setProjects(projectsData);
+            if (!currentProject && projectsData.length > 0) {
+                setCurrentProject(projectsData[0]);
+            }
+        }, (error) => {
+            console.error("Error listening to projects:", error);
+            setInfoModalContent({
+                title: "Erro de Sincronização",
+                message: "Não foi possível sincronizar os projetos. Tente recarregar a página."
+            });
+            setShowInfoModal(true);
+        });
+
+        return () => {
+            projectsUnsubscribe();
+        };
+    }, [db, userId, currentProject]);
+
+    // Listener for expenses and budgets
+    useEffect(() => {
+        if (!db || !userId || !currentProject) return;
+
+        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+        const expensesUnsubscribe = onSnapshot(expensesColRef, (snapshot) => {
+            const expensesData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setExpenses(expensesData);
+        }, (error) => {
+            console.error("Error listening to expenses:", error);
+        });
+
+        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
+        const budgetsUnsubscribe = onSnapshot(budgetsColRef, (snapshot) => {
+            const budgetsData = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setBudgets(budgetsData);
+        }, (error) => {
+            console.error("Error listening to budgets:", error);
+        });
+
+        return () => {
+            expensesUnsubscribe();
+            budgetsUnsubscribe();
+        };
+    }, [db, userId, currentProject]);
+
+    // --- Helper Functions ---
+    const showMessageModal = (title, message) => {
+        setInfoModalContent({ title, message });
+        setShowInfoModal(true);
+    };
+
+    // --- CRUD Operations ---
+    const addProject = async () => {
+        if (!db || !userId) {
+            showMessageModal("Erro", "Não foi possível adicionar o projeto. Tente novamente.");
+            return;
         }
 
-        // --- Event Listeners e Inicialização ---
-        document.addEventListener('DOMContentLoaded', () => {
-            // Adiciona o event listener para o formulário de despesas
-            expenseForm.addEventListener('submit', addExpense);
+        const newProjectName = prompt("Digite o nome do novo projeto:");
+        if (!newProjectName) return;
 
-            // Adiciona o event listener para o formulário de orçamento
-            budgetForm.addEventListener('submit', addBudget);
+        const projectsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects`);
+        const docRef = doc(projectsColRef);
 
-            // Botoes e modais
-            newExpenseBtn.addEventListener('click', () => newExpenseModal.classList.remove('hidden'));
-            closeExpenseModal.addEventListener('click', () => newExpenseModal.classList.add('hidden'));
-            addBudgetBtn.addEventListener('click', () => budgetModal.classList.remove('hidden'));
-            closeBudgetModal.addEventListener('click', () => budgetModal.classList.add('hidden'));
-            closeModalBtn.addEventListener('click', hideMessageModal);
+        try {
+            await setDoc(docRef, { name: newProjectName, createdAt: new Date() });
+            showMessageModal("Sucesso", `Projeto "${newProjectName}" criado com sucesso!`);
+            setCurrentProject({ id: docRef.id, name: newProjectName });
+        } catch (e) {
+            console.error("Error adding project: ", e);
+            showMessageModal("Erro", "Não foi possível criar o projeto. Verifique a sua conexão.");
+        }
+    };
 
-            // Filtro de categoria
-            categoryFilter.addEventListener('change', filterAndRenderExpenses);
+    const deleteProject = async (projectId) => {
+        if (!db || !userId || !projectId) {
+            showMessageModal("Erro", "Não foi possível remover o projeto. Tente novamente.");
+            return;
+        }
 
-            // Exportar para PDF
-            exportPdfBtn.addEventListener('click', exportToPdf);
+        if (!window.confirm("Tem certeza que deseja remover este projeto e todos os seus dados?")) {
+            return;
+        }
 
-            // Inicialização da aplicação
-            async function initApp() {
-                showLoading("Carregando dados...");
-                try {
-                    await openDb();
-                    await loadExpenses();
-                    await loadBudget();
-                    filterAndRenderExpenses();
-                    updateSummary();
-                    mainContainer.classList.remove('hidden');
-                } catch (error) {
-                    showMessageModal("Erro de Carregamento", "Ocorreu um erro ao carregar os dados. Tente recarregar a página. Detalhes: " + error.message);
-                } finally {
-                    hideLoading();
+        try {
+            // Delete expenses subcollection
+            const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/expenses`);
+            const expenseDocs = await getDocs(expensesColRef);
+            await Promise.all(expenseDocs.docs.map(doc => deleteDoc(doc.ref)));
+
+            // Delete budgets subcollection
+            const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${projectId}/budgets`);
+            const budgetDocs = await getDocs(budgetsColRef);
+            await Promise.all(budgetDocs.docs.map(doc => deleteDoc(doc.ref)));
+
+            // Delete the project document itself
+            const projectDocRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${projectId}`);
+            await deleteDoc(projectDocRef);
+
+            // After deletion, switch to the first project in the list or null if none exist
+            setProjects(prevProjects => {
+                const updatedProjects = prevProjects.filter(p => p.id !== projectId);
+                if (updatedProjects.length > 0) {
+                    setCurrentProject(updatedProjects[0]);
+                } else {
+                    setCurrentProject(null);
                 }
-            }
+                return updatedProjects;
+            });
 
-            initApp();
+            showMessageModal("Sucesso", "Projeto removido com sucesso!");
+        } catch (e) {
+            console.error("Error removing project: ", e);
+            showMessageModal("Erro", "Não foi possível remover o projeto. Verifique a sua conexão.");
+        }
+    };
+
+    const addBudgetItem = async () => {
+        if (!budgetItem || !budgetAmount || !currentProject) {
+            showMessageModal("Erro", "Preencha todos os campos do orçamento.");
+            return;
+        }
+        if (isNaN(parseFloat(budgetAmount))) {
+            showMessageModal("Erro", "O valor do orçamento deve ser um número.");
+            return;
+        }
+
+        const budgetsColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`);
+
+        try {
+            await addDoc(budgetsColRef, {
+                item: budgetItem,
+                amount: parseFloat(budgetAmount),
+                createdAt: new Date()
+            });
+            setBudgetItem('');
+            setBudgetAmount('');
+            showMessageModal("Sucesso", "Item de orçamento adicionado.");
+        } catch (e) {
+            console.error("Error adding budget item: ", e);
+            showMessageModal("Erro", "Não foi possível adicionar o item de orçamento. Tente novamente.");
+        }
+    };
+
+    const deleteBudgetItem = async (id) => {
+        if (!id || !currentProject) return;
+
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/budgets`, id);
+        try {
+            await deleteDoc(docRef);
+            showMessageModal("Sucesso", "Item de orçamento removido.");
+        } catch (e) {
+            console.error("Error removing budget item: ", e);
+            showMessageModal("Erro", "Não foi possível remover o item de orçamento. Tente novamente.");
+        }
+    };
+
+    const addExpense = async () => {
+        if (!expenseDescription || !expenseAmount || !expenseDate || !expenseType || !currentProject) {
+            showMessageModal("Erro", "Preencha todos os campos da despesa.");
+            return;
+        }
+        if (isNaN(parseFloat(expenseAmount))) {
+            showMessageModal("Erro", "O valor da despesa deve ser um número.");
+            return;
+        }
+
+        const expensesColRef = collection(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`);
+
+        try {
+            await addDoc(expensesColRef, {
+                description: expenseDescription,
+                amount: parseFloat(expenseAmount),
+                date: expenseDate,
+                type: expenseType,
+                createdAt: new Date()
+            });
+            setExpenseDescription('');
+            setExpenseAmount('');
+            setExpenseType('Material');
+            setExpenseDate(format(new Date(), 'yyyy-MM-dd'));
+            showMessageModal("Sucesso", "Despesa adicionada.");
+        } catch (e) {
+            console.error("Error adding expense: ", e);
+            showMessageModal("Erro", "Não foi possível adicionar a despesa. Tente novamente.");
+        }
+    };
+
+    const deleteExpense = async (id) => {
+        if (!id || !currentProject) return;
+
+        const docRef = doc(db, `artifacts/${appId}/users/${userId}/projects/${currentProject.id}/expenses`, id);
+        try {
+            await deleteDoc(docRef);
+            showMessageModal("Sucesso", "Despesa removida.");
+        } catch (e) {
+            console.error("Error removing expense: ", e);
+            showMessageModal("Erro", "Não foi possível remover a despesa. Tente novamente.");
+        }
+    };
+    
+    // --- Data Processing for Charts and Display ---
+    const filterAndSearchExpenses = () => {
+        let filtered = expenses.filter(expense => {
+            const matchesFilter = selectedFilter === 'all' || expense.type === selectedFilter;
+            const matchesSearch = searchTerm === '' || expense.description.toLowerCase().includes(searchTerm.toLowerCase());
+            return matchesFilter && matchesSearch;
         });
-    </script>
-</body>
-</html>
+
+        // Sort by date in descending order
+        return filtered.sort((a, b) => parseISO(b.date).getTime() - parseISO(a.date).getTime());
+    };
+
+    const totalBudget = budgets.reduce((sum, item) => sum + item.amount, 0);
+    const totalExpenses = expenses.reduce((sum, item) => sum + item.amount, 0);
+    const remainingBudget = totalBudget - totalExpenses;
+
+    const getDoughnutData = () => {
+        const materialExpenses = expenses
+            .filter(e => e.type === 'Material')
+            .reduce((sum, e) => sum + e.amount, 0);
+        const laborExpenses = expenses
+            .filter(e => e.type === 'Mão de Obra')
+            .reduce((sum, e) => sum + e.amount, 0);
+        const otherExpenses = expenses
+            .filter(e => e.type === 'Outros')
+            .reduce((sum, e) => sum + e.amount, 0);
+
+        return {
+            labels: ['Materiais', 'Mão de Obra', 'Outros'],
+            datasets: [
+                {
+                    data: [materialExpenses, laborExpenses, otherExpenses],
+                    backgroundColor: ['#3B82F6', '#22C55E', '#F97316'],
+                    borderColor: ['#ffffff'],
+                    borderWidth: 2,
+                },
+            ],
+        };
+    };
+
+    const getBudgetAllocationData = () => {
+        const labels = budgets.map(b => b.item);
+        const amounts = budgets.map(b => b.amount);
+        return {
+            labels: labels,
+            datasets: [
+                {
+                    label: 'Alocação do Orçamento',
+                    data: amounts,
+                    backgroundColor: '#10B981',
+                    borderColor: '#059669',
+                    borderWidth: 1,
+                },
+            ],
+        };
+    };
+
+    const getMonthlyExpensesData = () => {
+        const monthlyData = expenses.reduce((acc, expense) => {
+            const month = format(parseISO(expense.date), 'MM/yyyy');
+            acc[month] = (acc[month] || 0) + expense.amount;
+            return acc;
+        }, {});
+
+        const sortedMonths = Object.keys(monthlyData).sort((a, b) => {
+            const [monthA, yearA] = a.split('/').map(Number);
+            const [monthB, yearB] = b.split('/').map(Number);
+            if (yearA !== yearB) return yearA - yearB;
+            return monthA - monthB;
+        });
+
+        return {
+            labels: sortedMonths,
+            datasets: [
+                {
+                    label: 'Despesas por Mês',
+                    data: sortedMonths.map(month => monthlyData[month]),
+                    backgroundColor: '#EF4444',
+                    borderColor: '#B91C1C',
+                    borderWidth: 1,
+                },
+            ],
+        };
+    };
+
+    // --- Components ---
+    const InfoModal = ({ title, message, onClose }) => {
+        return (
+            <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+                <div className="relative p-6 bg-white rounded-lg shadow-xl max-w-sm mx-auto text-center transform transition-all sm:my-8 sm:align-middle sm:max-w-lg">
+                    <h3 className="text-xl leading-6 font-bold text-gray-900 mb-4">{title}</h3>
+                    <div className="mt-2">
+                        <p className="text-sm text-gray-500 break-all">{message}</p>
+                    </div>
+                    <div className="mt-5 sm:mt-6">
+                        <button
+                            onClick={onClose}
+                            type="button"
+                            className="inline-flex justify-center w-full rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm"
+                        >
+                            OK
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    // --- Main Render Logic ---
+    const renderContent = () => {
+        if (loading) {
+            return (
+                <div className="flex items-center justify-center h-screen bg-gray-100">
+                    <div className="flex flex-col items-center">
+                        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                        <p className="text-gray-600 font-medium">Carregando...</p>
+                    </div>
+                </div>
+            );
+        }
+
+        if (!user || !userId) {
+            return (
+                <div className="flex items-center justify-center h-screen bg-gray-100">
+                    <div className="text-center p-8 bg-white rounded-xl shadow-lg">
+                        <h2 className="text-2xl font-bold mb-4">Acesso Negado</h2>
+                        <p className="text-gray-600">
+                            Não foi possível autenticar o usuário. Por favor, tente novamente mais tarde.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
+
+        return (
+            <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 sm:p-8">
+                <div className="w-full max-w-6xl bg-white rounded-2xl shadow-xl overflow-hidden flex flex-col">
+                    
+                    {/* Header with Project Selection and Add Button */}
+                    <header className="bg-white p-4 sm:p-6 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-center space-y-4 sm:space-y-0">
+                        <div className="flex items-center space-x-2 w-full sm:w-auto">
+                            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 flex-shrink-0">
+                                Gestão de Obra
+                            </h1>
+                            {projects.length > 0 && (
+                                <div className="flex-grow sm:flex-grow-0">
+                                    <select
+                                        value={currentProject ? currentProject.id : ''}
+                                        onChange={(e) => {
+                                            const selectedProject = projects.find(p => p.id === e.target.value);
+                                            setCurrentProject(selectedProject);
+                                        }}
+                                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
+                                    >
+                                        {projects.map(project => (
+                                            <option key={project.id} value={project.id}>{project.name}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex items-center space-x-2">
+                            {currentProject && (
+                                <button
+                                    onClick={() => deleteProject(currentProject.id)}
+                                    className="bg-red-500 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-red-600 transition-colors"
+                                >
+                                    Excluir Projeto
+                                </button>
+                            )}
+                            <button
+                                onClick={addProject}
+                                className="bg-blue-600 text-white px-4 py-2 rounded-lg font-medium shadow-md hover:bg-blue-700 transition-colors"
+                            >
+                                Adicionar Novo Projeto
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Check if there is a project to display content */}
+                    {!currentProject ? (
+                        <div className="flex-grow flex items-center justify-center p-8">
+                            <p className="text-gray-500 text-lg">
+                                Crie um novo projeto para começar a gerenciar suas despesas e orçamentos.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="flex flex-col flex-grow">
+                            {/* Tab Navigation */}
+                            <nav className="bg-gray-50 border-b border-gray-200">
+                                <div className="flex justify-center sm:justify-start -mb-px">
+                                    <button
+                                        onClick={() => setActiveTab('dashboard')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'dashboard' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Painel de Controle
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('budget')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'budget' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Orçamento
+                                    </button>
+                                    <button
+                                        onClick={() => setActiveTab('expenses')}
+                                        className={`py-4 px-6 font-medium text-sm sm:text-base border-b-2 transition-colors duration-300 ${activeTab === 'expenses' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
+                                    >
+                                        Despesas
+                                    </button>
+                                </div>
+                            </nav>
+        
+                            {/* Main Content based on active tab */}
+                            <div className="p-4 sm:p-8 flex-grow overflow-y-auto">
+                                {activeTab === 'dashboard' && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-semibold mb-2 text-gray-800">Resumo Financeiro</h2>
+                                            <p className="text-sm sm:text-base text-gray-600">Orçamento Total: <span className="font-bold text-green-600">R$ {totalBudget.toFixed(2)}</span></p>
+                                            <p className="text-sm sm:text-base text-gray-600">Total de Despesas: <span className="font-bold text-red-600">R$ {totalExpenses.toFixed(2)}</span></p>
+                                            <p className="text-sm sm:text-base text-gray-600">
+                                                Orçamento Restante: 
+                                                <span className={`font-bold ${remainingBudget >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                    R$ {remainingBudget.toFixed(2)}
+                                                </span>
+                                            </p>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
+                                            <div className="w-full max-w-xs">
+                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas por Categoria</h2>
+                                                {expenses.length > 0 ? (
+                                                    <Doughnut data={getDoughnutData()} />
+                                                ) : (
+                                                    <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
+                                                )}
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex items-center justify-center">
+                                            <div className="w-full">
+                                                <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Orçamento por Item</h2>
+                                                {budgets.length > 0 ? (
+                                                    <Bar 
+                                                        data={getBudgetAllocationData()}
+                                                        options={{ responsive: true, maintainAspectRatio: true }}
+                                                    />
+                                                ) : (
+                                                    <p className="text-center text-sm text-gray-500">Nenhum item de orçamento para exibir.</p>
+                                                )}
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200 col-span-1 md:col-span-2 lg:col-span-3">
+                                            <h2 className="text-lg sm:text-xl font-semibold text-center mb-4 text-gray-800">Despesas ao Longo do Tempo</h2>
+                                            {expenses.length > 0 ? (
+                                                <Bar
+                                                    data={getMonthlyExpensesData()}
+                                                    options={{ responsive: true, maintainAspectRatio: true }}
+                                                />
+                                            ) : (
+                                                <p className="text-center text-sm text-gray-500">Nenhuma despesa para exibir.</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+        
+                                {activeTab === 'budget' && (
+                                    <div className="space-y-8">
+                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Item ao Orçamento</h2>
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                <input
+                                                    type="text"
+                                                    value={budgetItem}
+                                                    onChange={(e) => setBudgetItem(e.target.value)}
+                                                    placeholder="Item (Ex: Telhado)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    value={budgetAmount}
+                                                    onChange={(e) => setBudgetAmount(e.target.value)}
+                                                    placeholder="Valor (R$)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <button onClick={addBudgetItem} className="w-full bg-green-500 text-white font-medium py-2 rounded-lg shadow-md hover:bg-green-600 transition-colors">
+                                                    Adicionar
+                                                </button>
+                                            </div>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Itens do Orçamento</h2>
+                                            <div className="overflow-x-auto">
+                                                <table className="min-w-full divide-y divide-gray-200">
+                                                    <thead>
+                                                        <tr className="bg-gray-50">
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Item
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Valor (R$)
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Ações
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="bg-white divide-y divide-gray-200">
+                                                        {budgets.length > 0 ? (
+                                                            budgets.map(budget => (
+                                                                <tr key={budget.id}>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{budget.item}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{budget.amount.toFixed(2)}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                                        <button onClick={() => deleteBudgetItem(budget.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))
+                                                        ) : (
+                                                            <tr>
+                                                                <td colSpan="3" className="px-6 py-4 text-center text-sm text-gray-500">Nenhum item de orçamento registrado ainda.</td>
+                                                            </tr>
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+        
+                                {activeTab === 'expenses' && (
+                                    <div className="space-y-8">
+                                        <div className="bg-gray-50 p-6 rounded-xl shadow-inner border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Adicionar Nova Despesa</h2>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                                <select
+                                                    value={expenseType}
+                                                    onChange={(e) => setExpenseType(e.target.value)}
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                >
+                                                    <option value="Material">Material</option>
+                                                    <option value="Mão de Obra">Mão de Obra</option>
+                                                    <option value="Outros">Outros</option>
+                                                </select>
+                                                <input
+                                                    type="text"
+                                                    value={expenseDescription}
+                                                    onChange={(e) => setExpenseDescription(e.target.value)}
+                                                    placeholder="Descrição (Ex: Cimento)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <input
+                                                    type="number"
+                                                    value={expenseAmount}
+                                                    onChange={(e) => setExpenseAmount(e.target.value)}
+                                                    placeholder="Valor (R$)"
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                                <input
+                                                    type="date"
+                                                    value={expenseDate}
+                                                    onChange={(e) => setExpenseDate(e.target.value)}
+                                                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                />
+                                            </div>
+                                            <button onClick={addExpense} className="mt-4 w-full bg-blue-600 text-white font-medium py-2 rounded-lg shadow-md hover:bg-blue-700 transition-colors">
+                                                Registrar Despesa
+                                            </button>
+                                        </div>
+        
+                                        <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                                            <h2 className="text-lg sm:text-xl font-bold mb-4 text-gray-800">Registro de Despesas</h2>
+                                            <div className="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4 mb-4">
+                                                <div className="flex-grow">
+                                                    <input
+                                                        type="text"
+                                                        value={searchTerm}
+                                                        onChange={(e) => setSearchTerm(e.target.value)}
+                                                        placeholder="Buscar por descrição..."
+                                                        className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                    />
+                                                </div>
+                                                <select
+                                                    value={selectedFilter}
+                                                    onChange={(e) => setSelectedFilter(e.target.value)}
+                                                    className="w-full sm:w-auto px-4 py-2 rounded-lg border border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                                                >
+                                                    <option value="all">Todas as Despesas</option>
+                                                    <option value="Material">Material</option>
+                                                    <option value="Mão de Obra">Mão de Obra</option>
+                                                    <option value="Outros">Outros</option>
+                                                </select>
+                                            </div>
+                                            <div className="overflow-x-auto">
+                                                <table className="min-w-full divide-y divide-gray-200">
+                                                    <thead>
+                                                        <tr className="bg-gray-50">
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Data
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Descrição
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Tipo
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Valor (R$)
+                                                            </th>
+                                                            <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                                Ações
+                                                            </th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="bg-white divide-y divide-gray-200">
+                                                        {filterAndSearchExpenses().length > 0 ? (
+                                                            filterAndSearchExpenses().map(expense => (
+                                                                <tr key={expense.id}>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{format(parseISO(expense.date), 'dd/MM/yyyy')}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{expense.description}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.type}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{expense.amount.toFixed(2)}</td>
+                                                                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                                        <button onClick={() => deleteExpense(expense.id)} className="text-red-600 hover:text-red-900 transition-colors">Remover</button>
+                                                                    </td>
+                                                                </tr>
+                                                            ))
+                                                        ) : (
+                                                            <tr>
+                                                                <td colSpan="5" className="px-6 py-4 text-center text-sm text-gray-500">
+                                                                    {expenses.length === 0 ? 'Nenhuma despesa registrada ainda.' : 'Nenhum resultado encontrado.'}
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                    
+                    <footer className="mt-auto pt-4 pb-2 border-t border-gray-200 text-center bg-gray-50">
+                        <p className="text-gray-500 text-xs">
+                            ID do Usuário: <span className="font-mono break-all">{userId}</span>
+                        </p>
+                    </footer>
+                </div>
+            </div>
+        );
+    };
+
+    return (
+        <>
+            {renderContent()}
+            {showInfoModal && (
+                <InfoModal
+                    title={infoModalContent.title}
+                    message={infoModalContent.message}
+                    onClose={() => setShowInfoModal(false)}
+                />
+            )}
+        </>
+    );
+};
+
+export default App;
